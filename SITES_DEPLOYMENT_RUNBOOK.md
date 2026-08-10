@@ -130,7 +130,7 @@ login_rate_limits
 6. package内に `0001_initial.sql`、`0002_request_idempotency.sql`、`0003_demo_seed.sql` がこの番号順で存在することを確認する。
 7. Sitesのmigration-aware経路で3本を同梱・deployする。connectorから履歴を照会できない場合は、deploy結果と実URLのschema利用を記録する。
 8. user、site、schedule、record、punch、request、auditの件数と参照整合性をアプリ挙動または承認済みD1照会で確認する。
-9. 架空accountで通常のlogin APIを通過できることを確認する。schemaは利用できても全架空accountが401となる場合は、3つの公開デモgateが有効で8つのアプリ表（`login_rate_limits`を除く）が合計0件のときだけ動く `ensurePublicDemoBootstrap()` を使う互換性versionへ切り替える。この処理は既定user・siteと当日シナリオを1つのD1 batchで作成する。既存userがあればno-op、userなしの部分状態なら503で停止する。
+9. 架空accountで通常のlogin APIを通過できることを確認する。schemaは利用できても全架空accountが401となる場合は、3つの公開デモgateが有効で8つのアプリ表（`login_rate_limits`を除く）が合計0件のときだけ動く `ensurePublicDemoBootstrap()` を使う互換性versionへ切り替える。この処理は既定user・siteと当日シナリオを1つのD1 batchで作成する。並行要求の競合batchは全体rollbackし、完成済み既定状態だけをno-opとして認める。既存userがあればno-op、userなしの部分状態なら503で停止する。
 10. 初回login後に管理者の `POST /api/admin/reset` を実行し、当日シナリオへ戻ることと再実行性を確認する。
 
 `0003` は既存データ入りD1へ再適用しません。部分適用の兆候がある場合は盲目的に再実行せず、事前承認した空D1の再作成またはbackupからのrestoreへ戻ります。履歴がconnectorから取得不能なら、その事実と実URLの代替検証を記録します。`db:seed:local` は非空ローカルDBを拒否し、`db:reset:local` は既存データを明示的に消してから全migrationと動的seedを再現します。

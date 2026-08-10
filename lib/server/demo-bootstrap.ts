@@ -67,6 +67,47 @@ const DEMO_SITES = [
   { id: "site-b", name: "B現場" },
 ] as const;
 
+async function publicDemoBootstrapCompleted(
+  database: D1Database,
+): Promise<boolean> {
+  const state = await database
+    .prepare(
+      `SELECT
+         (SELECT COUNT(*) FROM users) AS users,
+         (SELECT COUNT(*) FROM users
+           WHERE id IN ('user-admin', 'user-maru', 'user-batsu',
+                        'user-sankaku', 'user-shikaku', 'user-hishi'))
+           AS known_users,
+         (SELECT COUNT(*) FROM work_sites) AS sites,
+         (SELECT COUNT(*) FROM work_sites WHERE id IN ('site-a', 'site-b'))
+           AS known_sites,
+         (SELECT COUNT(*) FROM work_schedules) AS schedules,
+         (SELECT COUNT(*) FROM attendance_records) AS records,
+         (SELECT COUNT(*) FROM attendance_requests) AS requests,
+         (SELECT COUNT(*) FROM audit_logs) AS audits`,
+    )
+    .first<{
+      users: number;
+      known_users: number;
+      sites: number;
+      known_sites: number;
+      schedules: number;
+      records: number;
+      requests: number;
+      audits: number;
+    }>();
+  return (
+    Number(state?.users ?? 0) === DEMO_USERS.length &&
+    Number(state?.known_users ?? 0) === DEMO_USERS.length &&
+    Number(state?.sites ?? 0) === DEMO_SITES.length &&
+    Number(state?.known_sites ?? 0) === DEMO_SITES.length &&
+    Number(state?.schedules ?? 0) === 6 &&
+    Number(state?.records ?? 0) === 6 &&
+    Number(state?.requests ?? 0) === 3 &&
+    Number(state?.audits ?? 0) === 4
+  );
+}
+
 export async function ensurePublicDemoBootstrap(input: {
   database: D1Database;
   environment: DemoModeEnvironment;
@@ -103,7 +144,7 @@ export async function ensurePublicDemoBootstrap(input: {
   const directoryStatements: D1PreparedStatement[] = DEMO_USERS.map((user) =>
     input.database
       .prepare(
-        `INSERT OR IGNORE INTO users
+        `INSERT INTO users
            (id, employee_code, normalized_email, display_name, role,
             password_hash, active, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)`,
@@ -123,7 +164,7 @@ export async function ensurePublicDemoBootstrap(input: {
     ...DEMO_SITES.map((site) =>
       input.database
         .prepare(
-          `INSERT OR IGNORE INTO work_sites
+          `INSERT INTO work_sites
              (id, name, active, created_at, updated_at)
            VALUES (?, ?, 1, ?, ?)`,
         )
@@ -131,14 +172,19 @@ export async function ensurePublicDemoBootstrap(input: {
     ),
   );
 
-  await input.database.batch([
-    ...directoryStatements,
-    ...buildDemoAttendanceResetStatements({
-      database: input.database,
-      actorUserId: "user-admin",
-      now,
-      source: "empty_d1_bootstrap",
-    }),
-  ]);
+  try {
+    await input.database.batch([
+      ...directoryStatements,
+      ...buildDemoAttendanceResetStatements({
+        database: input.database,
+        actorUserId: "user-admin",
+        now,
+        source: "empty_d1_bootstrap",
+      }),
+    ]);
+  } catch (error) {
+    if (await publicDemoBootstrapCompleted(input.database)) return false;
+    throw error;
+  }
   return true;
 }

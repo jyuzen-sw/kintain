@@ -121,7 +121,7 @@ npm run db:reset:local
 - `db:reset:local`: 既存ローカルデータを外部キー順に空にし、全migrationを適用した後、固定migration seedを動的な当日データへ置き換えます。
 - `LOCAL_DEMO_EMPLOYEE_PASSWORD` と `LOCAL_DEMO_ADMIN_PASSWORD` はローカルseedの上書き専用です。hosted環境へ登録しません。
 
-`seed` と `reset` subcommandは意図的にWranglerの `--local` だけを使用します。`render` subcommandはD1へ接続しません。実D1への第一経路は、Sites標準packageに同梱した `0001` → `0002` → `0003` です。Sites connectorは物理D1名、migration履歴、SQL実行を公開しないため、実URLでschemaは利用できても架空データが存在しない場合に限り、3つの公開デモgateと8つのアプリ表（`login_rate_limits`を除く）の合計0件を条件として初回login POSTが `lib/server/demo-bootstrap.ts` の原子的batchを実行します。既存userがあればno-op、userなしの部分状態なら503で停止し、既存データを変更しません。ローカルscriptをremote向けに変更しないでください。
+`seed` と `reset` subcommandは意図的にWranglerの `--local` だけを使用します。`render` subcommandはD1へ接続しません。実D1への第一経路は、Sites標準packageに同梱した `0001` → `0002` → `0003` です。Sites connectorは物理D1名、migration履歴、SQL実行を公開しないため、実URLでschemaは利用できても架空データが存在しない場合に限り、3つの公開デモgateと8つのアプリ表（`login_rate_limits`を除く）の合計0件を条件として初回login POSTが `lib/server/demo-bootstrap.ts` の原子的batchを実行します。並行要求は通常INSERTの一意制約で遅いbatch全体をrollbackし、完成した既定状態を再照会できた場合だけno-opとして続行します。既存userがあればno-op、userなしの部分状態なら503で停止し、既存データを変更しません。ローカルscriptをremote向けに変更しないでください。
 
 ### 4.3 アプリ内reset
 

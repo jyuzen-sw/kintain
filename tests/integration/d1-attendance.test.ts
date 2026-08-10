@@ -863,6 +863,24 @@ describe("D1を使う勤怠フロー", () => {
 
   it("並行する公開デモ初回ログインも重複・部分投入しない", async () => {
     await clearApplicationData();
+    const environment = {
+      DEMO_MODE: "true",
+      ALLOW_PUBLIC_DEMO: "true",
+      SHOW_DEMO_CREDENTIALS: "true",
+    };
+    const bootstrapResults = await Promise.all([
+      ensurePublicDemoBootstrap({
+        database: testEnv.DB,
+        environment,
+        now: new Date("2026-08-10T00:00:00.000Z"),
+      }),
+      ensurePublicDemoBootstrap({
+        database: testEnv.DB,
+        environment,
+        now: new Date("2026-08-10T00:00:01.000Z"),
+      }),
+    ]);
+    expect(bootstrapResults.filter(Boolean)).toHaveLength(1);
     const responses = await Promise.all([
       login(demoLoginRequest("admin@example.test", "AdminDemo!2026")),
       login(demoLoginRequest("maru.employee@example.test", "DemoPass!2026")),
