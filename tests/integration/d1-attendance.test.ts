@@ -16,6 +16,7 @@ import { hashPassword, sha256Base64Url } from "@/lib/server/crypto";
 import { ensurePublicDemoBootstrap } from "@/lib/server/demo-bootstrap";
 import { resetDemoAttendanceData } from "@/lib/server/demo-reset";
 import { HttpError } from "@/lib/server/http";
+import packagedDemoSeedSql from "@/drizzle/0003_demo_seed.sql?raw";
 
 interface IntegrationEnv extends Env {
   TEST_MIGRATIONS: Parameters<typeof applyD1Migrations>[1];
@@ -121,6 +122,16 @@ async function clearApplicationData(): Promise<void> {
     testEnv.DB.prepare("DELETE FROM work_sites"),
     testEnv.DB.prepare("DELETE FROM users"),
   ]);
+}
+
+async function applyPackagedDemoSeed(): Promise<void> {
+  const statements = packagedDemoSeedSql
+    .split(/;\s*(?:\r?\n|$)/u)
+    .map((statement) => statement.trim())
+    .filter(Boolean)
+    .map((statement) => testEnv.DB.prepare(statement));
+  expect(statements).toHaveLength(7);
+  await testEnv.DB.batch(statements);
 }
 
 describe("D1を使う勤怠フロー", () => {
@@ -806,6 +817,92 @@ describe("D1を使う勤怠フロー", () => {
          (SELECT count(*) FROM audit_logs) AS audits`,
     ).first<{ users: number; schedules: number; audits: number }>();
     expect(unchanged).toEqual({ users: 6, schedules: 6, audits: 4 });
+  });
+
+  it("Sites同梱seedを一度だけ認証可能な公開デモ状態へ整合する", async () => {
+    await clearApplicationData();
+    await applyPackagedDemoSeed();
+    const environment = {
+      DEMO_MODE: "true",
+      ALLOW_PUBLIC_DEMO: "true",
+      SHOW_DEMO_CREDENTIALS: "true",
+    };
+    const reconciliationResults = await Promise.all([
+      ensurePublicDemoBootstrap({
+        database: testEnv.DB,
+        environment,
+        now: new Date("2026-08-10T00:00:01.000Z"),
+      }),
+      ensurePublicDemoBootstrap({
+        database: testEnv.DB,
+        environment,
+        now: new Date("2026-08-10T00:00:02.000Z"),
+      }),
+    ]);
+    expect(reconciliationResults.filter(Boolean)).toHaveLength(1);
+
+    const loginResponse = await login(
+      demoLoginRequest("maru.employee@example.test", "DemoPass!2026"),
+    );
+    expect(loginResponse.status).toBe(200);
+    expect(
+      await ensurePublicDemoBootstrap({
+        database: testEnv.DB,
+        environment,
+        now: new Date("2026-08-10T00:00:03.000Z"),
+      }),
+    ).toBe(false);
+
+    const state = await testEnv.DB.prepare(
+      `SELECT
+         (SELECT count(*) FROM users WHERE active = 1) AS active_users,
+         (SELECT count(*) FROM login_rate_limits
+           WHERE scope_type = 'account'
+             AND scope_key_hash = 'demo-seed-reconcile-v1') AS markers,
+         (SELECT count(*) FROM audit_logs
+           WHERE json_extract(after_json, '$.source') =
+                 'packaged_seed_reconcile') AS reconciliation_audits`,
+    ).first<{
+      active_users: number;
+      markers: number;
+      reconciliation_audits: number;
+    }>();
+    expect(state).toEqual({
+      active_users: 6,
+      markers: 1,
+      reconciliation_audits: 1,
+    });
+  });
+
+  it("更新済みデータをSites同梱seedと誤認して整合しない", async () => {
+    await clearApplicationData();
+    await applyPackagedDemoSeed();
+    await testEnv.DB.prepare(
+      `UPDATE attendance_records
+          SET note = '変更済みデータ', updated_at = '2026-08-10T03:40:00.000Z'
+        WHERE id = 'attendance-maru-today'`,
+    ).run();
+
+    expect(
+      await ensurePublicDemoBootstrap({
+        database: testEnv.DB,
+        environment: {
+          DEMO_MODE: "true",
+          ALLOW_PUBLIC_DEMO: "true",
+          SHOW_DEMO_CREDENTIALS: "true",
+        },
+        now: new Date("2026-08-10T04:00:00.000Z"),
+      }),
+    ).toBe(false);
+    const record = await testEnv.DB.prepare(
+      `SELECT note, updated_at
+         FROM attendance_records
+        WHERE id = 'attendance-maru-today'`,
+    ).first<{ note: string; updated_at: string }>();
+    expect(record).toEqual({
+      note: "変更済みデータ",
+      updated_at: "2026-08-10T03:40:00.000Z",
+    });
   });
 
   it.each([

@@ -13,7 +13,7 @@ export interface DemoAttendanceResetInput {
   database: D1Database;
   actorUserId: string;
   now?: Date;
-  source?: "admin_reset" | "empty_d1_bootstrap";
+  source?: "admin_reset" | "empty_d1_bootstrap" | "packaged_seed_reconcile";
 }
 
 export function buildDemoAttendanceResetStatements(
@@ -224,7 +224,9 @@ export function buildDemoAttendanceResetStatements(
       }),
       input.source === "empty_d1_bootstrap"
         ? "空の公開デモD1を初回ログインで初期化したため"
-        : "デモデータを初期状態へ戻したため",
+        : input.source === "packaged_seed_reconcile"
+          ? "Sites同梱seedを実行日の公開デモ状態へ整合したため"
+          : "デモデータを初期状態へ戻したため",
       input.actorUserId,
       createdAt,
     ),

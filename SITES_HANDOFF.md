@@ -58,7 +58,7 @@ OpenAI公式showcaseも、SitesのVinext starter、Worker互換ESM、D1 `DB`、R
 | visual QA | Playwright対象viewport＋手動確認 | 4 viewport×10画面＝40 PNG。代表6画面で横overflow・未完了loading・表示崩れなし |
 | production依存監査 | `npm audit --omit=dev` | Vinext固定依存に既知high 3件。既知制約へ記録済み |
 
-上表はPhase 1時点の履歴です。Phase 2では実D1 bootstrapのため `0003_demo_seed.sql` とローカル互換性修正を独立commitへ追加しました。さらに初回実deployでschemaは利用できる一方、正しい架空資格情報が401となったため、公開デモgate下の空D1だけを原子的に初期化する互換性修正を別commitへ分離し、全検査と実URL再検証を `SITES_DEPLOYMENT_RESULT.md` に記録します。
+上表はPhase 1時点の履歴です。Phase 2では実D1 bootstrapのため `0003_demo_seed.sql` とローカル互換性修正を独立commitへ追加しました。さらに初回実deployでschemaは利用できる一方、正しい架空資格情報が401となったため、公開デモgate下の空D1初期化と、同梱seedが厳密一致した場合だけの一度限りの整合処理を互換性修正として分離し、全検査と実URL再検証を `SITES_DEPLOYMENT_RESULT.md` に記録します。
 
 Phase 2の再現順:
 
@@ -121,7 +121,7 @@ npm run db:reset:local
 - `db:reset:local`: 既存ローカルデータを外部キー順に空にし、全migrationを適用した後、固定migration seedを動的な当日データへ置き換えます。
 - `LOCAL_DEMO_EMPLOYEE_PASSWORD` と `LOCAL_DEMO_ADMIN_PASSWORD` はローカルseedの上書き専用です。hosted環境へ登録しません。
 
-`seed` と `reset` subcommandは意図的にWranglerの `--local` だけを使用します。`render` subcommandはD1へ接続しません。実D1への第一経路は、Sites標準packageに同梱した `0001` → `0002` → `0003` です。Sites connectorは物理D1名、migration履歴、SQL実行を公開しないため、実URLでschemaは利用できても架空データが存在しない場合に限り、3つの公開デモgateと8つのアプリ表（`login_rate_limits`を除く）の合計0件を条件として初回login POSTが `lib/server/demo-bootstrap.ts` の原子的batchを実行します。並行要求は通常INSERTの一意制約で遅いbatch全体をrollbackし、完成した既定状態を再照会できた場合だけno-opとして続行します。既存userがあればno-op、userなしの部分状態なら503で停止し、既存データを変更しません。ローカルscriptをremote向けに変更しないでください。
+`seed` と `reset` subcommandは意図的にWranglerの `--local` だけを使用します。`render` subcommandはD1へ接続しません。実D1への第一経路は、Sites標準packageに同梱した `0001` → `0002` → `0003` です。Sites connectorは物理D1名、migration履歴、SQL実行を公開しないため、初回login POSTの `lib/server/demo-bootstrap.ts` が実URLから状態を検証します。3つの公開デモgateが有効で、8つのアプリ表（`login_rate_limits`を除く）が完全に空なら原子的batchで初期化します。既に `0003` の固定seedがある場合は、全テーブル件数と既知IDが厳密一致するときだけ、公開資格情報と実行日シナリオへ一度だけ整合します。いずれも通常INSERTの一意markerで遅い並行batch全体をrollbackし、完成状態を再照会できた場合だけno-opとして続行します。任意の既存userはno-op、userなしの部分状態は503で停止し、既存データを変更しません。ローカルscriptをremote向けに変更しないでください。
 
 ### 4.3 アプリ内reset
 
@@ -143,7 +143,7 @@ npm run db:reset:local
 
 架空account表示と管理者用HTTP resetは、3つのruntime gateがすべて有効な場合だけ許可されます。どれか1つでも満たさない通常モードでは無効です。
 
-この3つのgateはcredential入力補助、空D1の初回架空bootstrap、HTTP reset、公開デモのGPS破棄を制御するもので、login APIや公開済みseed credential自体を無効化しません。初回bootstrapは3つすべてが有効で8つのアプリ表が空のときだけ動き、部分状態または非空DBには触れません。`login_rate_limits` だけは、初回401からの復旧のため空判定対象外でbootstrap batchが削除します。Siteのaccessを一般公開する場合は3つのgateをすべて有効にする明示承認が必要です。それ以外はowner/admin限定を維持します。公開credentialを使わない運用へ変える場合は、非公開credentialの安全な投入・rotationを別実装としてreviewします。
+この3つのgateはcredential入力補助、空D1の初回架空bootstrap、厳密に識別した同梱seedの一度限りの整合、HTTP reset、公開デモのGPS破棄を制御するもので、login APIや公開済みseed credential自体を無効化しません。空D1 bootstrapは8つのアプリ表が空のときだけ、同梱seed整合は全件数と既知IDが `0003` と完全一致するときだけ動き、それ以外の部分状態または非空DBには触れません。`login_rate_limits` は初回401からの復旧のため空判定対象外ですが、一意markerを保持します。Siteのaccessを一般公開する場合は3つのgateをすべて有効にする明示承認が必要です。それ以外はowner/admin限定を維持します。公開credentialを使わない運用へ変える場合は、非公開credentialの安全な投入・rotationを別実装としてreviewします。
 
 同じ3つのgateが有効な公開デモでは、訪問者端末のgeolocation APIを呼ばず、直接打刻APIへ送られた座標もサーバー側で破棄します。通常モードだけが任意GPS取得を行います。seedに含む座標は規則的に生成した合成値です。
 

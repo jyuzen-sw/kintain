@@ -23,7 +23,7 @@ OpenAI公式では、Sitesの公開処理は「review可能なversionを保存�
 - `npm ci`、lint、typecheck、unit、integration、E2E、buildのいずれかが失敗
 - SitesがVinext/Worker artifactまたはD1 bindingを受理しない
 - `0001_initial.sql`、`0002_request_idempotency.sql`、`0003_demo_seed.sql` の同梱順、deploy結果、または実URLでのschema利用を確認できない
-- `0003` または公開デモgate下の空D1限定bootstrapのどちらでも、架空seedを安全に投入・確認できない
+- `0003`、公開デモgate下の空D1限定bootstrap、または厳密に識別した同梱seedの一度限りの整合のいずれでも、架空seedを安全に投入・確認できない
 - 実在人物のメール、勤怠、位置情報、credentialが混入
 - environment valueをprompt、添付、source、logへ転記する必要が生じる
 - 一般公開の責任者承認がない
@@ -130,12 +130,12 @@ login_rate_limits
 6. package内に `0001_initial.sql`、`0002_request_idempotency.sql`、`0003_demo_seed.sql` がこの番号順で存在することを確認する。
 7. Sitesのmigration-aware経路で3本を同梱・deployする。connectorから履歴を照会できない場合は、deploy結果と実URLのschema利用を記録する。
 8. user、site、schedule、record、punch、request、auditの件数と参照整合性をアプリ挙動または承認済みD1照会で確認する。
-9. 架空accountで通常のlogin APIを通過できることを確認する。schemaは利用できても全架空accountが401となる場合は、3つの公開デモgateが有効で8つのアプリ表（`login_rate_limits`を除く）が合計0件のときだけ動く `ensurePublicDemoBootstrap()` を使う互換性versionへ切り替える。この処理は既定user・siteと当日シナリオを1つのD1 batchで作成する。並行要求の競合batchは全体rollbackし、完成済み既定状態だけをno-opとして認める。既存userがあればno-op、userなしの部分状態なら503で停止する。
+9. 架空accountで通常のlogin APIを通過できることを確認する。schemaは利用できても全架空accountが401となる場合は、3つの公開デモgate下で動く `ensurePublicDemoBootstrap()` を使う互換性versionへ切り替える。8つのアプリ表（`login_rate_limits`を除く）が合計0件なら既定user・siteと当日シナリオを1つのD1 batchで作成する。`0003` のデータが存在する場合は、全件数と既知IDが固定seedと完全一致するときだけ、公開資格情報と実行日シナリオへ一度だけ整合する。どちらも一意markerを使い、並行要求の競合batchは全体rollbackして、完成済み既定状態だけをno-opとして認める。任意の既存userは変更せず、userなしの部分状態は503で停止する。
 10. 初回login後に管理者の `POST /api/admin/reset` を実行し、当日シナリオへ戻ることと再実行性を確認する。
 
 `0003` は既存データ入りD1へ再適用しません。部分適用の兆候がある場合は盲目的に再実行せず、事前承認した空D1の再作成またはbackupからのrestoreへ戻ります。履歴がconnectorから取得不能なら、その事実と実URLの代替検証を記録します。`db:seed:local` は非空ローカルDBを拒否し、`db:reset:local` は既存データを明示的に消してから全migrationと動的seedを再現します。
 
-管理者の `POST /api/admin/reset` 自体は空D1の初回bootstrapではありません。初回bootstrapは、公開デモgate下のlogin POSTが8つのアプリ表の合計0件を確認した場合だけ、既定user・siteの作成と同じreset statement群を原子的に実行し、監査理由に自動初期化と記録します。部分状態は変更せず停止します。通常のreset APIは既存user・siteを前提に、勤怠系の架空データを戻す日常デモ用です。
+管理者の `POST /api/admin/reset` 自体は空D1の初回bootstrapではありません。初回bootstrapは、公開デモgate下のlogin POSTが8つのアプリ表の合計0件を確認した場合だけ、既定user・siteの作成と同じreset statement群を原子的に実行し、監査理由に自動初期化と記録します。Sites同梱seedの整合も全件数と既知IDが固定seedに厳密一致した場合だけ同じstatement群を実行し、別の監査sourceと一意markerを残します。部分状態と任意の既存状態は変更しません。通常のreset APIは既存user・siteを前提に、勤怠系の架空データを戻す日常デモ用です。
 
 ## 6. hosted environment valuesを設定する
 

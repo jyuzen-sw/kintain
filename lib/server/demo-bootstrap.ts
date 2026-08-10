@@ -67,6 +67,9 @@ const DEMO_SITES = [
   { id: "site-b", name: "B現場" },
 ] as const;
 
+const PACKAGED_SEED_RECONCILE_MARKER = "demo-seed-reconcile-v1";
+const PACKAGED_SEED_CREATED_AT = "2026-08-10T03:38:33.222Z";
+
 async function publicDemoBootstrapCompleted(
   database: D1Database,
 ): Promise<boolean> {
@@ -108,12 +111,190 @@ async function publicDemoBootstrapCompleted(
   );
 }
 
+async function packagedDemoSeedDetected(database: D1Database): Promise<boolean> {
+  const state = await database
+    .prepare(
+      `SELECT
+         (SELECT COUNT(*) FROM users) AS users,
+         (SELECT COUNT(*) FROM users
+           WHERE id IN ('user-admin', 'user-maru', 'user-batsu',
+                        'user-sankaku', 'user-shikaku', 'user-hishi'))
+           AS known_users,
+         (SELECT COUNT(*) FROM users
+           WHERE created_at = ? AND updated_at = ?) AS seed_users,
+         (SELECT COUNT(*) FROM work_sites) AS sites,
+         (SELECT COUNT(*) FROM work_sites WHERE id IN ('site-a', 'site-b'))
+           AS known_sites,
+         (SELECT COUNT(*) FROM work_sites
+           WHERE created_at = ? AND updated_at = ?) AS seed_sites,
+         (SELECT COUNT(*) FROM work_schedules) AS schedules,
+         (SELECT COUNT(*) FROM work_schedules
+           WHERE id IN ('schedule-maru-today', 'schedule-batsu-today',
+                        'schedule-sankaku-today', 'schedule-shikaku-today',
+                        'schedule-hishi-today', 'schedule-maru-yesterday'))
+           AS known_schedules,
+         (SELECT COUNT(*) FROM work_schedules
+           WHERE created_at = ? AND updated_at = ?) AS seed_schedules,
+         (SELECT COUNT(*) FROM attendance_records) AS records,
+         (SELECT COUNT(*) FROM attendance_records
+           WHERE id IN ('attendance-maru-today', 'attendance-batsu-today',
+                        'attendance-sankaku-today', 'attendance-shikaku-today',
+                        'attendance-hishi-today', 'attendance-maru-yesterday'))
+           AS known_records,
+         (SELECT COUNT(*) FROM attendance_records
+           WHERE created_at = ? AND updated_at = ?) AS seed_records,
+         (SELECT COUNT(*) FROM punch_events) AS punches,
+         (SELECT COUNT(*) FROM punch_events
+           WHERE id IN ('punch-maru-today-in', 'punch-batsu-today-in',
+                        'punch-batsu-today-out', 'punch-maru-yesterday-in',
+                        'punch-maru-yesterday-out')) AS known_punches,
+         (SELECT COUNT(*) FROM punch_events WHERE created_at = ?)
+           AS seed_punches,
+         (SELECT COUNT(*) FROM attendance_requests) AS requests,
+         (SELECT COUNT(*) FROM attendance_requests
+           WHERE id IN ('request-shikaku-pending', 'request-hishi-approved',
+                        'request-sankaku-rejected')) AS known_requests,
+         (SELECT COUNT(*) FROM attendance_requests
+           WHERE created_at = ? AND updated_at = ?) AS seed_requests,
+         (SELECT COUNT(*) FROM audit_logs) AS audits,
+         (SELECT COUNT(*) FROM audit_logs
+           WHERE id IN ('audit-maru-correction', 'audit-hishi-approval',
+                        'audit-sankaku-rejection')) AS known_audits,
+         (SELECT COUNT(*) FROM audit_logs WHERE created_at = ?) AS seed_audits,
+         (SELECT COUNT(*) FROM sessions) AS sessions`,
+    )
+    .bind(
+      PACKAGED_SEED_CREATED_AT,
+      PACKAGED_SEED_CREATED_AT,
+      PACKAGED_SEED_CREATED_AT,
+      PACKAGED_SEED_CREATED_AT,
+      PACKAGED_SEED_CREATED_AT,
+      PACKAGED_SEED_CREATED_AT,
+      PACKAGED_SEED_CREATED_AT,
+      PACKAGED_SEED_CREATED_AT,
+      PACKAGED_SEED_CREATED_AT,
+      PACKAGED_SEED_CREATED_AT,
+      PACKAGED_SEED_CREATED_AT,
+      PACKAGED_SEED_CREATED_AT,
+    )
+    .first<Record<string, number>>();
+  const count = (name: string): number => Number(state?.[name] ?? 0);
+  return (
+    count("users") === 6 &&
+    count("known_users") === 6 &&
+    count("seed_users") === 6 &&
+    count("sites") === 2 &&
+    count("known_sites") === 2 &&
+    count("seed_sites") === 2 &&
+    count("schedules") === 6 &&
+    count("known_schedules") === 6 &&
+    count("seed_schedules") === 6 &&
+    count("records") === 6 &&
+    count("known_records") === 6 &&
+    count("seed_records") === 6 &&
+    count("punches") === 5 &&
+    count("known_punches") === 5 &&
+    count("seed_punches") === 5 &&
+    count("requests") === 3 &&
+    count("known_requests") === 3 &&
+    count("seed_requests") === 3 &&
+    count("audits") === 3 &&
+    count("known_audits") === 3 &&
+    count("seed_audits") === 3 &&
+    count("sessions") === 0
+  );
+}
+
+async function packagedSeedReconcileCompleted(
+  database: D1Database,
+): Promise<boolean> {
+  const marker = await database
+    .prepare(
+      `SELECT COUNT(*) AS count
+         FROM login_rate_limits
+        WHERE scope_type = 'account' AND scope_key_hash = ?`,
+    )
+    .bind(PACKAGED_SEED_RECONCILE_MARKER)
+    .first<{ count: number }>();
+  return (
+    Number(marker?.count ?? 0) === 1 &&
+    (await publicDemoBootstrapCompleted(database))
+  );
+}
+
+async function reconcilePackagedDemoSeed(
+  database: D1Database,
+  now: Date,
+): Promise<boolean> {
+  if (!(await packagedDemoSeedDetected(database))) return false;
+
+  const updatedAt = now.toISOString();
+  const claimMarker = () =>
+    database
+      .prepare(
+        `INSERT INTO login_rate_limits
+           (scope_type, scope_key_hash, window_started_at, failure_count,
+            blocked_until, updated_at)
+         VALUES ('account', ?, ?, 0, NULL, ?)`,
+      )
+      .bind(PACKAGED_SEED_RECONCILE_MARKER, updatedAt, updatedAt);
+  const directoryUpdates: D1PreparedStatement[] = DEMO_USERS.map((user) =>
+    database
+      .prepare(
+        `UPDATE users
+            SET employee_code = ?, normalized_email = ?, display_name = ?,
+                role = ?, password_hash = ?, active = 1, updated_at = ?
+          WHERE id = ?`,
+      )
+      .bind(
+        user.employeeCode,
+        user.email,
+        user.displayName,
+        user.role,
+        user.passwordHash,
+        updatedAt,
+        user.id,
+      ),
+  );
+  directoryUpdates.push(
+    ...DEMO_SITES.map((site) =>
+      database
+        .prepare(
+          `UPDATE work_sites
+              SET name = ?, active = 1, updated_at = ?
+            WHERE id = ?`,
+        )
+        .bind(site.name, updatedAt, site.id),
+    ),
+  );
+
+  try {
+    await database.batch([
+      claimMarker(),
+      ...directoryUpdates,
+      ...buildDemoAttendanceResetStatements({
+        database,
+        actorUserId: "user-admin",
+        now,
+        source: "packaged_seed_reconcile",
+      }),
+      claimMarker(),
+    ]);
+  } catch (error) {
+    if (await packagedSeedReconcileCompleted(database)) return false;
+    throw error;
+  }
+  return true;
+}
+
 export async function ensurePublicDemoBootstrap(input: {
   database: D1Database;
   environment: DemoModeEnvironment;
   now?: Date;
 }): Promise<boolean> {
   if (!isPublicDemoMode(input.environment)) return false;
+
+  const now = input.now ?? new Date();
 
   const existing = await input.database
     .prepare(
@@ -130,7 +311,7 @@ export async function ensurePublicDemoBootstrap(input: {
     )
     .first<{ users: number; application_rows: number }>();
   const users = Number(existing?.users ?? 0);
-  if (users > 0) return false;
+  if (users > 0) return reconcilePackagedDemoSeed(input.database, now);
   if (Number(existing?.application_rows ?? 0) > 0) {
     throw new HttpError(
       503,
@@ -139,7 +320,6 @@ export async function ensurePublicDemoBootstrap(input: {
     );
   }
 
-  const now = input.now ?? new Date();
   const createdAt = now.toISOString();
   const directoryStatements: D1PreparedStatement[] = DEMO_USERS.map((user) =>
     input.database

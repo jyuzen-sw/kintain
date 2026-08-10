@@ -75,7 +75,7 @@ npm run dev
 
 - D1 bindingはコード、Wrangler、Sites manifestのすべてで `DB` に固定しています。
 - schemaは [`db/schema.ts`](./db/schema.ts)、migrationは [`drizzle/0001_initial.sql`](./drizzle/0001_initial.sql) → [`drizzle/0002_request_idempotency.sql`](./drizzle/0002_request_idempotency.sql) → [`drizzle/0003_demo_seed.sql`](./drizzle/0003_demo_seed.sql) の順です。`0003` は空の実D1へ一度だけ適用する架空デモデータ移行です。
-- Sites実環境でschemaだけが存在し架空データ行がない場合は、3つの公開デモgateがすべて有効なときに限り、初回login POSTが8つのアプリ表（rate limit表を除く）の完全な空を確認して既定の架空user・site・当日シナリオを1つのD1 batchで初期化します。並行要求の一方は一意制約で全体rollbackし、先行初期化の完成を確認してno-opになります。部分状態または非空DBは変更せず停止します。
+- Sites実環境で架空データ行が存在しない場合は、3つの公開デモgateがすべて有効なときに限り、初回login POSTが8つのアプリ表（rate limit表を除く）の完全な空を確認して既定の架空user・site・当日シナリオを1つのD1 batchで初期化します。また、Sitesが同梱migrationの固定seedを適用済みの場合は、全件数と既知IDが `0003_demo_seed.sql` と完全一致するときだけ、公開資格情報と実行日シナリオへ一度だけ同じbatchで整合します。どちらも一意markerで並行要求の片方を全体rollbackし、先行処理の完成を確認してno-opにします。任意の既存データや部分状態は変更しません。
 - UTC日時はISO 8601のTEXT、勤務日はAsia/Tokyo基準の `YYYY-MM-DD` で保存します。
 - ローカルD1状態、ローカル環境ファイル、実環境値はGit管理しません。
 - hosted environment valuesはPhase 2でSitesの設定画面から登録し、値をprompt、添付、manifest、文書、ログへ転記しません。[OpenAI Sites documentation](https://learn.chatgpt.com/docs/sites)
