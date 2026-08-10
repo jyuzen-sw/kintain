@@ -17,11 +17,12 @@
 | リポジトリ | `kintain`（この環境ではremote未設定） |
 | ローカルパス | `/repository/kintain` |
 | ブランチ | `main` |
-| 引き渡しコミット | `PHASE1_COMMIT_SHA` |
+| 検証済み実装コミット | `d9e68606f9bf3a762fbcea4d72d77e3ea4fbef5a` |
+| 最終引き渡しHEAD | 上記実装コミットへ、このSHA記録だけを加えた直後の文書コミット |
 | Node.js | 22以上 |
 | package manager | npm（`package-lock.json` を正とする） |
 
-Phase 2は、上記コミットを取得してworktreeがcleanであることを確認してください。不一致、未コミット変更、必須文書の欠落、検査失敗があればdeployせず、状態を記録して原因を切り分けます。
+コミットは自身のSHAを内容に含められないため、最終引き渡しHEADは上記実装コミットの直後にある文書専用コミットです。Phase 2は最終HEADを取得し、`git rev-parse HEAD^` が上記SHAで、worktreeがcleanであることを確認してください。不一致、未コミット変更、必須文書の欠落、検査失敗があればdeployせず、状態を記録して原因を切り分けます。
 
 ## 2. Sites適合形
 
