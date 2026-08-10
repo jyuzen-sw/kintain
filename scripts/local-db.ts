@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const databaseBinding = "DB";
-const passwordIterations = 600_000;
+const passwordIterations = 100_000;
 const localEmployeePassword =
   process.env.LOCAL_DEMO_EMPLOYEE_PASSWORD ?? "DemoPass!2026";
 const localAdminPassword = process.env.LOCAL_DEMO_ADMIN_PASSWORD ?? "AdminDemo!2026";

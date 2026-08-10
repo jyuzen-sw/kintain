@@ -12,7 +12,7 @@ const RATE_MAX_FAILURES = 5;
 // Workerのglobal scopeでは乱数生成とPBKDF2を開始できないため、実アカウントと
 // 同じ計算量を持つ、ログインには使われない固定ダミーハッシュを検証に使う。
 const DUMMY_PASSWORD_HASH =
-  "pbkdf2-sha256$600000$tLDpEscdk9Y7hGtfPdmWYg$so57WBFNxFN_G1Y5Cz45zkBjKfmltLNUH91ggayV0CE";
+  "pbkdf2-sha256$100000$-r04Siq0QbnbszE7lhEASA$zT3HUQEF9oZHLDcIpIOp59Rr5bCW-2tzWwbzQPeOFoA";
 
 export interface LoginResult {
   user: SessionUser;

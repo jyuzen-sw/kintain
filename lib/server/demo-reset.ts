@@ -1,5 +1,8 @@
 import { toJstWorkDate } from "@/lib/domain/datetime";
 
+export const PACKAGED_SEED_RECONCILE_MARKER = "demo-seed-reconcile-v1";
+export const RUNTIME_PASSWORD_RECONCILE_MARKER = "demo-runtime-passwords-v1";
+
 function jstTime(workDate: string, time: string): string {
   return new Date(`${workDate}T${time}:00+09:00`).toISOString();
 }
@@ -67,7 +70,14 @@ export function buildDemoAttendanceResetStatements(
     statement("DELETE FROM attendance_requests"),
     statement("DELETE FROM attendance_records"),
     statement("DELETE FROM work_schedules"),
-    statement("DELETE FROM login_rate_limits"),
+    statement(
+      `DELETE FROM login_rate_limits
+        WHERE NOT (
+          scope_type = 'account' AND scope_key_hash IN (?, ?)
+        )`,
+      PACKAGED_SEED_RECONCILE_MARKER,
+      RUNTIME_PASSWORD_RECONCILE_MARKER,
+    ),
   ];
 
   const schedules = [

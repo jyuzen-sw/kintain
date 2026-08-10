@@ -58,7 +58,7 @@ OpenAI公式showcaseも、SitesのVinext starter、Worker互換ESM、D1 `DB`、R
 | visual QA | Playwright対象viewport＋手動確認 | 4 viewport×10画面＝40 PNG。代表6画面で横overflow・未完了loading・表示崩れなし |
 | production依存監査 | `npm audit --omit=dev` | Vinext固定依存に既知high 3件。既知制約へ記録済み |
 
-上表はPhase 1時点の履歴です。Phase 2では実D1 bootstrapのため `0003_demo_seed.sql` とローカル互換性修正を独立commitへ追加しました。さらに初回実deployでschemaは利用できる一方、正しい架空資格情報が401となったため、公開デモgate下の空D1初期化と、同梱seedが厳密一致した場合だけの一度限りの整合処理を互換性修正として分離し、全検査と実URL再検証を `SITES_DEPLOYMENT_RESULT.md` に記録します。
+上表はPhase 1時点の履歴です。Phase 2では実D1 bootstrapのため `0003_demo_seed.sql` とローカル互換性修正を独立commitへ追加しました。さらに初回実deployでschemaは利用できる一方、正しい架空資格情報が401となりました。原因はSites本番workerdがPBKDF2を100,000反復までに制限し、Phase 1の600,000反復hashを `verifyPassword()` が例外から不一致へ変換していたことです。公開デモgate下の空D1初期化、同梱seedの厳密整合、既知の旧hashだけの一度限りの互換更新を分離し、全検査と実URL再検証を `SITES_DEPLOYMENT_RESULT.md` に記録します。
 
 Phase 2の再現順:
 
@@ -121,7 +121,7 @@ npm run db:reset:local
 - `db:reset:local`: 既存ローカルデータを外部キー順に空にし、全migrationを適用した後、固定migration seedを動的な当日データへ置き換えます。
 - `LOCAL_DEMO_EMPLOYEE_PASSWORD` と `LOCAL_DEMO_ADMIN_PASSWORD` はローカルseedの上書き専用です。hosted環境へ登録しません。
 
-`seed` と `reset` subcommandは意図的にWranglerの `--local` だけを使用します。`render` subcommandはD1へ接続しません。実D1への第一経路は、Sites標準packageに同梱した `0001` → `0002` → `0003` です。Sites connectorは物理D1名、migration履歴、SQL実行を公開しないため、初回login POSTの `lib/server/demo-bootstrap.ts` が実URLから状態を検証します。3つの公開デモgateが有効で、8つのアプリ表（`login_rate_limits`を除く）が完全に空なら原子的batchで初期化します。既に `0003` の固定seedがある場合は、全テーブル件数と既知IDが厳密一致するときだけ、公開資格情報と実行日シナリオへ一度だけ整合します。いずれも通常INSERTの一意markerで遅い並行batch全体をrollbackし、完成状態を再照会できた場合だけno-opとして続行します。任意の既存userはno-op、userなしの部分状態は503で停止し、既存データを変更しません。ローカルscriptをremote向けに変更しないでください。
+`seed` と `reset` subcommandは意図的にWranglerの `--local` だけを使用します。`render` subcommandはD1へ接続しません。実D1への第一経路は、Sites標準packageに同梱した `0001` → `0002` → `0003` です。Sites connectorは物理D1名、migration履歴、SQL実行を公開しないため、初回login POSTの `lib/server/demo-bootstrap.ts` が実URLから状態を検証します。3つの公開デモgateが有効で、8つのアプリ表（`login_rate_limits`を除く）が完全に空なら原子的batchで初期化します。既に `0003` の固定seedがある場合は、全テーブル件数と既知IDが厳密一致するときだけ、100,000反復の公開デモ資格情報と実行日シナリオへ一度だけ整合します。旧600,000反復hashで整合済みの場合も、全6件のdirectory値・旧hash・初期化監査・sessionなしが完全一致するときだけ、勤怠をresetせずhashを更新します。いずれも通常INSERTの一意markerで遅い並行batch全体をrollbackし、完成状態を再照会できた場合だけno-opとして続行します。任意の既存userはno-op、userなしの部分状態は503で停止し、既存データを変更しません。ローカルscriptをremote向けに変更しないでください。
 
 ### 4.3 アプリ内reset
 
@@ -215,7 +215,7 @@ npm run db:reset:local
 ## 9. 認証・認可
 
 - Sitesの共有範囲とアプリ内loginは別の境界です。一般公開にしても従業員・管理画面のAPIはD1 sessionとroleで保護します。
-- passwordは個別salt付きPBKDF2-SHA-256でhash化し、平文をD1へ保存しません。
+- passwordは個別salt付きPBKDF2-SHA-256でhash化し、平文をD1へ保存しません。公開デモaccountだけはSites本番workerdのhost上限に合わせて100,000反復とし、scheme、個別salt、保存形式は変更しません。
 - session tokenとCSRF tokenはopaque random値を発行し、D1にはhashだけを保存します。session有効期間は12時間です。
 - HTTPSでは `__Host-` prefix、`Secure`、`HttpOnly`、`SameSite` cookieを使用します。
 - login失敗はaccount・IP fingerprintの両方で制限し、存在しないuserにもdummy hash検証を行います。
@@ -262,7 +262,7 @@ Phase 2では実URLをinstallし、standalone起動、safe area、offline案内�
 4. **Vinext beta advisory**: `vinext@1.0.0-beta.5` がadvisory対象の `image-size@2.0.2` を固定しています。npmの提示する解消は互換性を崩すdowngradeで、Phase 1では適用していません。公開前に修正版の有無と入力面を再評価します。
 5. **実D1経路**: migration・seedはローカルで成功済みですが、SitesがprovisionしたD1への適用経路、実行結果、再実行性、backup/rollbackをPhase 2で確認します。
 6. **D1 batch**: HTTP resetのstatement数、申請判断・勤怠修正の条件付きbatch、実環境latency、failure時挙動を実D1で確認します。
-7. **PBKDF2 CPU**: 600,000反復をWorkers runtimeで実測し、login latencyとCPU制限を確認します。安全性を落とす変更はPhase 2で即断しません。
+7. **PBKDF2 host上限**: Sites本番workerdはPBKDF2を100,000反復までに制限し、600,000反復は `NotSupportedError` になります。公開済みの架空デモaccountだけ100,000反復へ互換調整します。600,000反復を必要とする実credential運用はPhase 1へ戻す課題です。[workerd limit enforcer](https://github.com/cloudflare/workerd/blob/main/src/workerd/io/limit-enforcer.h#L27)
 8. **session運用**: 自動的な期限切れsession清掃jobはありません。PoC後に運用する場合はcleanup方針が必要です。
 9. **PWA実URL**: Sitesのresponse header・scope下でinstallabilityとoffline fallbackを確認します。
 10. **実在データ禁止**: 勤怠、メール、位置情報、ログを含め、架空値以外は投入しません。

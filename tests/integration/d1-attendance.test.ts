@@ -817,7 +817,7 @@ describe("D1を使う勤怠フロー", () => {
          (SELECT count(*) FROM audit_logs) AS audits`,
     ).first<{ users: number; schedules: number; audits: number }>();
     expect(unchanged).toEqual({ users: 6, schedules: 6, audits: 4 });
-  });
+  }, 20_000);
 
   it("Sites同梱seedを一度だけ認証可能な公開デモ状態へ整合する", async () => {
     await clearApplicationData();
@@ -858,19 +858,174 @@ describe("D1を使う勤怠フロー", () => {
          (SELECT count(*) FROM users WHERE active = 1) AS active_users,
          (SELECT count(*) FROM login_rate_limits
            WHERE scope_type = 'account'
-             AND scope_key_hash = 'demo-seed-reconcile-v1') AS markers,
+              AND scope_key_hash = 'demo-seed-reconcile-v1') AS markers,
+         (SELECT count(*) FROM login_rate_limits
+           WHERE scope_type = 'account'
+             AND scope_key_hash = 'demo-runtime-passwords-v1') AS runtime_markers,
          (SELECT count(*) FROM audit_logs
            WHERE json_extract(after_json, '$.source') =
-                 'packaged_seed_reconcile') AS reconciliation_audits`,
+                  'packaged_seed_reconcile') AS reconciliation_audits`,
     ).first<{
       active_users: number;
       markers: number;
+      runtime_markers: number;
       reconciliation_audits: number;
     }>();
     expect(state).toEqual({
       active_users: 6,
       markers: 1,
+      runtime_markers: 1,
       reconciliation_audits: 1,
+    });
+
+    await testEnv.DB.prepare(
+      `INSERT INTO login_rate_limits
+         (scope_type, scope_key_hash, window_started_at, failure_count,
+          blocked_until, updated_at)
+       VALUES ('account', 'reset-test-rate-limit',
+               '2026-08-10T00:00:03.000Z', 1, NULL,
+               '2026-08-10T00:00:03.000Z')`,
+    ).run();
+    await resetDemoAttendanceData({
+      database: testEnv.DB,
+      actorUserId: "user-admin",
+      now: new Date("2026-08-10T00:00:04.000Z"),
+    });
+    const afterReset = await testEnv.DB.prepare(
+      `SELECT
+         (SELECT count(*) FROM login_rate_limits
+           WHERE scope_type = 'account'
+             AND scope_key_hash = 'demo-seed-reconcile-v1') AS packaged_markers,
+         (SELECT count(*) FROM login_rate_limits
+           WHERE scope_type = 'account'
+             AND scope_key_hash = 'demo-runtime-passwords-v1') AS runtime_markers,
+         (SELECT count(*) FROM login_rate_limits
+           WHERE scope_key_hash = 'reset-test-rate-limit') AS ordinary_limits`,
+    ).first<{
+      packaged_markers: number;
+      runtime_markers: number;
+      ordinary_limits: number;
+    }>();
+    expect(afterReset).toEqual({
+      packaged_markers: 1,
+      runtime_markers: 1,
+      ordinary_limits: 0,
+    });
+    expect(
+      await ensurePublicDemoBootstrap({
+        database: testEnv.DB,
+        environment,
+        now: new Date("2026-08-10T00:00:05.000Z"),
+      }),
+    ).toBe(false);
+  }, 20_000);
+
+  it("旧Sites整合済みD1は勤怠を再初期化せずSites互換password hashへ更新する", async () => {
+    await clearApplicationData();
+    await applyPackagedDemoSeed();
+    await resetDemoAttendanceData({
+      database: testEnv.DB,
+      actorUserId: "user-admin",
+      now: new Date("2026-08-10T01:00:00.000Z"),
+      source: "packaged_seed_reconcile",
+    });
+    await testEnv.DB.prepare(
+      `INSERT INTO login_rate_limits
+         (scope_type, scope_key_hash, window_started_at, failure_count,
+          blocked_until, updated_at)
+       VALUES ('account', 'demo-seed-reconcile-v1',
+               '2026-08-10T01:00:00.000Z', 0, NULL,
+               '2026-08-10T01:00:00.000Z')`,
+    ).run();
+    const before = await testEnv.DB.prepare(
+      "SELECT password_hash FROM users WHERE id = 'user-maru'",
+    ).first<{ password_hash: string }>();
+
+    const environment = {
+      DEMO_MODE: "true",
+      ALLOW_PUBLIC_DEMO: "true",
+      SHOW_DEMO_CREDENTIALS: "true",
+    };
+    const results = await Promise.all([
+      ensurePublicDemoBootstrap({
+        database: testEnv.DB,
+        environment,
+        now: new Date("2026-08-10T01:00:01.000Z"),
+      }),
+      ensurePublicDemoBootstrap({
+        database: testEnv.DB,
+        environment,
+        now: new Date("2026-08-10T01:00:02.000Z"),
+      }),
+    ]);
+    expect(results.filter(Boolean)).toHaveLength(1);
+
+    const after = await testEnv.DB.prepare(
+      `SELECT
+         (SELECT password_hash FROM users WHERE id = 'user-maru')
+           AS password_hash,
+         (SELECT count(*) FROM audit_logs) AS audits,
+         (SELECT count(*) FROM login_rate_limits
+           WHERE scope_type = 'account'
+             AND scope_key_hash = 'demo-runtime-passwords-v1') AS markers`,
+    ).first<{ password_hash: string; audits: number; markers: number }>();
+    expect(after?.password_hash).not.toBe(before?.password_hash);
+    expect(after).toMatchObject({ audits: 4, markers: 1 });
+    expect(
+      (
+        await login(
+          demoLoginRequest("maru.employee@example.test", "DemoPass!2026"),
+        )
+      ).status,
+    ).toBe(200);
+  }, 20_000);
+
+  it("旧Sites整合後に変更されたpassword hashは互換更新で上書きしない", async () => {
+    await clearApplicationData();
+    await applyPackagedDemoSeed();
+    await resetDemoAttendanceData({
+      database: testEnv.DB,
+      actorUserId: "user-admin",
+      now: new Date("2026-08-10T01:00:00.000Z"),
+      source: "packaged_seed_reconcile",
+    });
+    await testEnv.DB.batch([
+      testEnv.DB.prepare(
+        `INSERT INTO login_rate_limits
+           (scope_type, scope_key_hash, window_started_at, failure_count,
+            blocked_until, updated_at)
+         VALUES ('account', 'demo-seed-reconcile-v1',
+                 '2026-08-10T01:00:00.000Z', 0, NULL,
+                 '2026-08-10T01:00:00.000Z')`,
+      ),
+      testEnv.DB.prepare(
+        `UPDATE users SET password_hash = 'changed-outside-bootstrap'
+          WHERE id = 'user-maru'`,
+      ),
+    ]);
+
+    expect(
+      await ensurePublicDemoBootstrap({
+        database: testEnv.DB,
+        environment: {
+          DEMO_MODE: "true",
+          ALLOW_PUBLIC_DEMO: "true",
+          SHOW_DEMO_CREDENTIALS: "true",
+        },
+        now: new Date("2026-08-10T01:00:01.000Z"),
+      }),
+    ).toBe(false);
+    const state = await testEnv.DB.prepare(
+      `SELECT
+         (SELECT password_hash FROM users WHERE id = 'user-maru')
+           AS password_hash,
+         (SELECT count(*) FROM login_rate_limits
+           WHERE scope_type = 'account'
+             AND scope_key_hash = 'demo-runtime-passwords-v1') AS markers`,
+    ).first<{ password_hash: string; markers: number }>();
+    expect(state).toEqual({
+      password_hash: "changed-outside-bootstrap",
+      markers: 0,
     });
   });
 
@@ -1007,7 +1162,7 @@ describe("D1を使う勤怠フロー", () => {
       requests: 3,
       audits: 4,
     });
-  });
+  }, 20_000);
 
   it("変更APIはCSRFなしを拒否し、本人の申請作成と取消を監査ログへ残す", async () => {
     await seedSession(employee, "employee-token", "employee-csrf");

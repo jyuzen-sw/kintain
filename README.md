@@ -76,6 +76,7 @@ npm run dev
 - D1 bindingはコード、Wrangler、Sites manifestのすべてで `DB` に固定しています。
 - schemaは [`db/schema.ts`](./db/schema.ts)、migrationは [`drizzle/0001_initial.sql`](./drizzle/0001_initial.sql) → [`drizzle/0002_request_idempotency.sql`](./drizzle/0002_request_idempotency.sql) → [`drizzle/0003_demo_seed.sql`](./drizzle/0003_demo_seed.sql) の順です。`0003` は空の実D1へ一度だけ適用する架空デモデータ移行です。
 - Sites実環境で架空データ行が存在しない場合は、3つの公開デモgateがすべて有効なときに限り、初回login POSTが8つのアプリ表（rate limit表を除く）の完全な空を確認して既定の架空user・site・当日シナリオを1つのD1 batchで初期化します。また、Sitesが同梱migrationの固定seedを適用済みの場合は、全件数と既知IDが `0003_demo_seed.sql` と完全一致するときだけ、公開資格情報と実行日シナリオへ一度だけ同じbatchで整合します。どちらも一意markerで並行要求の片方を全体rollbackし、先行処理の完成を確認してno-opにします。任意の既存データや部分状態は変更しません。
+- 公開デモaccountは個別salt付きPBKDF2-SHA-256を維持し、Sites本番workerdのhost上限に合わせて100,000反復で固定します。既に `0003` の600,000反復hashを整合済みのD1は、6件すべての既知ID・directory値・旧hash・初期化監査が完全一致するときだけ、勤怠データを触らず一度だけ100,000反復hashへ更新します。
 - UTC日時はISO 8601のTEXT、勤務日はAsia/Tokyo基準の `YYYY-MM-DD` で保存します。
 - ローカルD1状態、ローカル環境ファイル、実環境値はGit管理しません。
 - hosted environment valuesはPhase 2でSitesの設定画面から登録し、値をprompt、添付、manifest、文書、ログへ転記しません。[OpenAI Sites documentation](https://learn.chatgpt.com/docs/sites)
@@ -102,4 +103,4 @@ Phase 1の実行結果、全画面・API route、smoke項目、既知制約は [
 - ChatGPT Sitesはpublic betaです。すべてのデプロイURLはproduction扱いなので、Phase 2ではまずversionを保存してレビューし、承認後にのみdeployします。
 - Sitesはローンチ時点でdata residency / inference residencyを提供せず、Site code、D1/R2、生成物、ログも対象です。架空データ以外を投入しません。[OpenAI Sites documentation](https://learn.chatgpt.com/docs/sites)
 - Vinext betaが既知advisory対象の `image-size` を固定しています。安全な互換更新が公開されるまでPoC限定です。
-- PBKDF2の反復処理と、実D1でのbatch・latency・migration/seed経路はPhase 2の実環境で確認が必要です。
+- Sites本番workerdはPBKDF2を100,000反復までに制限します。公開デモaccountはこの上限へ適合済みですが、600,000反復を必要とする実credential運用はPhase 1へ戻して別方式を設計する必要があります。実D1のbatch・latency・migration/seed経路はPhase 2の実環境で確認します。

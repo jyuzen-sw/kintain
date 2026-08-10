@@ -130,7 +130,7 @@ login_rate_limits
 6. package内に `0001_initial.sql`、`0002_request_idempotency.sql`、`0003_demo_seed.sql` がこの番号順で存在することを確認する。
 7. Sitesのmigration-aware経路で3本を同梱・deployする。connectorから履歴を照会できない場合は、deploy結果と実URLのschema利用を記録する。
 8. user、site、schedule、record、punch、request、auditの件数と参照整合性をアプリ挙動または承認済みD1照会で確認する。
-9. 架空accountで通常のlogin APIを通過できることを確認する。schemaは利用できても全架空accountが401となる場合は、3つの公開デモgate下で動く `ensurePublicDemoBootstrap()` を使う互換性versionへ切り替える。8つのアプリ表（`login_rate_limits`を除く）が合計0件なら既定user・siteと当日シナリオを1つのD1 batchで作成する。`0003` のデータが存在する場合は、全件数と既知IDが固定seedと完全一致するときだけ、公開資格情報と実行日シナリオへ一度だけ整合する。どちらも一意markerを使い、並行要求の競合batchは全体rollbackして、完成済み既定状態だけをno-opとして認める。任意の既存userは変更せず、userなしの部分状態は503で停止する。
+9. 架空accountで通常のlogin APIを通過できることを確認する。schemaは利用できても全架空accountが401となる場合は、workerdのPBKDF2 host上限も確認し、3つの公開デモgate下で動く `ensurePublicDemoBootstrap()` を使う互換性versionへ切り替える。8つのアプリ表（`login_rate_limits`を除く）が合計0件なら既定user・siteと当日シナリオを1つのD1 batchで作成する。`0003` のデータが存在する場合は、全件数と既知IDが固定seedと完全一致するときだけ、100,000反復の公開資格情報と実行日シナリオへ一度だけ整合する。旧600,000反復hashで整合済みの場合も、全6件のdirectory値・旧hash・初期化監査・sessionなしが完全一致するときだけ、勤怠をresetせずhashだけをatomic更新する。各処理は一意markerを使い、並行要求の競合batchは全体rollbackして、完成済み既定状態だけをno-opとして認める。任意の既存userは変更せず、userなしの部分状態は503で停止する。
 10. 初回login後に管理者の `POST /api/admin/reset` を実行し、当日シナリオへ戻ることと再実行性を確認する。
 
 `0003` は既存データ入りD1へ再適用しません。部分適用の兆候がある場合は盲目的に再実行せず、事前承認した空D1の再作成またはbackupからのrestoreへ戻ります。履歴がconnectorから取得不能なら、その事実と実URLの代替検証を記録します。`db:seed:local` は非空ローカルDBを拒否し、`db:reset:local` は既存データを明示的に消してから全migrationと動的seedを再現します。
@@ -307,5 +307,5 @@ smoke完了後、責任者承認のある最小範囲へ変更します。一般
 - environment valuesはSite settingsに置き、manifestへ書かない。
 - Sitesはローンチ時点でdata residency / inference residencyを提供しない。Site code、D1/R2、artifact、logも含む。
 - Protected Health Information、決済カード情報、実在従業員データを扱わない。
-- 実D1のbatch、PBKDF2 CPU時間、PWA挙動を実測する。
+- 実D1のbatch、公開デモPBKDF2 100,000反復のlogin latency、PWA挙動を実測する。600,000反復を必要とする実credential運用はPhase 1へ戻す。
 - Vinext betaと `image-size` advisoryを再評価し、解消できなければPoC限定を維持する。
