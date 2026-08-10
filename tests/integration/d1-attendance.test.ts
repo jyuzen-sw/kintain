@@ -13,6 +13,7 @@ import { POST as createRequest } from "@/app/api/me/requests/route";
 import type { SessionUser } from "@/lib/contracts/types";
 import { AttendanceService } from "@/lib/server/attendance-service";
 import { hashPassword, sha256Base64Url } from "@/lib/server/crypto";
+import { ensurePublicDemoBootstrap } from "@/lib/server/demo-bootstrap";
 import { resetDemoAttendanceData } from "@/lib/server/demo-reset";
 import { HttpError } from "@/lib/server/http";
 
@@ -94,6 +95,32 @@ async function seedSession(
       now,
     )
     .run();
+}
+
+function demoLoginRequest(email: string, password: string): Request {
+  return new Request("http://local.test/api/auth/login", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      origin: "http://local.test",
+      "sec-fetch-site": "same-origin",
+    },
+    body: JSON.stringify({ email, password }),
+  });
+}
+
+async function clearApplicationData(): Promise<void> {
+  await testEnv.DB.batch([
+    testEnv.DB.prepare("DELETE FROM sessions"),
+    testEnv.DB.prepare("DELETE FROM audit_logs"),
+    testEnv.DB.prepare("DELETE FROM punch_events"),
+    testEnv.DB.prepare("DELETE FROM attendance_requests"),
+    testEnv.DB.prepare("DELETE FROM attendance_records"),
+    testEnv.DB.prepare("DELETE FROM work_schedules"),
+    testEnv.DB.prepare("DELETE FROM login_rate_limits"),
+    testEnv.DB.prepare("DELETE FROM work_sites"),
+    testEnv.DB.prepare("DELETE FROM users"),
+  ]);
 }
 
 describe("D1を使う勤怠フロー", () => {
@@ -704,6 +731,167 @@ describe("D1を使う勤怠フロー", () => {
       .bind(employee.id)
       .first<{ count: number }>();
     expect(sessions?.count).toBe(1);
+    const schedules = await testEnv.DB.prepare(
+      "SELECT count(*) AS count FROM work_schedules",
+    ).first<{ count: number }>();
+    expect(schedules?.count).toBe(0);
+  });
+
+  it("公開デモの空D1を初回ログイン時だけ架空データへ初期化する", async () => {
+    await clearApplicationData();
+    await testEnv.DB.prepare(
+      `INSERT INTO login_rate_limits
+         (scope_type, scope_key_hash, window_started_at, failure_count)
+       VALUES ('ip', 'unrelated-bootstrap-retry', '2026-08-10T00:00:00.000Z', 0)`,
+    ).run();
+
+    const failedLogin = await login(
+      demoLoginRequest("admin@example.test", "WrongDemoPass!2026"),
+    );
+    expect(failedLogin.status).toBe(401);
+    expect(await failedLogin.json()).toMatchObject({
+      error: {
+        code: "INVALID_CREDENTIALS",
+        message: "メールアドレスまたはパスワードを確認してください。",
+      },
+    });
+
+    const firstLogin = await login(
+      demoLoginRequest("admin@example.test", "AdminDemo!2026"),
+    );
+    expect(firstLogin.status).toBe(200);
+    const firstCounts = await testEnv.DB.prepare(
+      `SELECT
+         (SELECT count(*) FROM users) AS users,
+         (SELECT count(*) FROM work_sites) AS sites,
+         (SELECT count(*) FROM work_schedules) AS schedules,
+         (SELECT count(*) FROM attendance_records) AS records,
+         (SELECT count(*) FROM attendance_requests) AS requests,
+         (SELECT count(*) FROM audit_logs) AS audits`,
+    ).first<{
+      users: number;
+      sites: number;
+      schedules: number;
+      records: number;
+      requests: number;
+      audits: number;
+    }>();
+    expect(firstCounts).toEqual({
+      users: 6,
+      sites: 2,
+      schedules: 6,
+      records: 6,
+      requests: 3,
+      audits: 4,
+    });
+
+    const secondLogin = await login(
+      demoLoginRequest("maru.employee@example.test", "DemoPass!2026"),
+    );
+    expect(secondLogin.status).toBe(200);
+    for (const email of [
+      "batsu.employee@example.test",
+      "sankaku.employee@example.test",
+      "shikaku.employee@example.test",
+      "hishi.employee@example.test",
+    ]) {
+      expect((await login(demoLoginRequest(email, "DemoPass!2026"))).status).toBe(
+        200,
+      );
+    }
+    const unchanged = await testEnv.DB.prepare(
+      `SELECT
+         (SELECT count(*) FROM users) AS users,
+         (SELECT count(*) FROM work_schedules) AS schedules,
+         (SELECT count(*) FROM audit_logs) AS audits`,
+    ).first<{ users: number; schedules: number; audits: number }>();
+    expect(unchanged).toEqual({ users: 6, schedules: 6, audits: 4 });
+  });
+
+  it.each([
+    ["DEMO_MODE"],
+    ["ALLOW_PUBLIC_DEMO"],
+    ["SHOW_DEMO_CREDENTIALS"],
+  ] as const)("%sが無効なら空D1を初期化しない", async (disabledGate) => {
+    await clearApplicationData();
+    const environment = {
+      DEMO_MODE: "true",
+      ALLOW_PUBLIC_DEMO: "true",
+      SHOW_DEMO_CREDENTIALS: "true",
+      [disabledGate]: "false",
+    };
+    expect(
+      await ensurePublicDemoBootstrap({
+        database: testEnv.DB,
+        environment,
+      }),
+    ).toBe(false);
+    const count = await testEnv.DB.prepare(
+      "SELECT count(*) AS count FROM users",
+    ).first<{ count: number }>();
+    expect(count?.count).toBe(0);
+  });
+
+  it("公開デモでも部分データのあるD1は初期化せず停止する", async () => {
+    await testEnv.DB.prepare("DELETE FROM users").run();
+    const response = await login(
+      new Request("http://local.test/api/auth/login", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          origin: "http://local.test",
+          "sec-fetch-site": "same-origin",
+        },
+        body: JSON.stringify({
+          email: "admin@example.test",
+          password: "AdminDemo!2026",
+        }),
+      }),
+    );
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({
+      error: { code: "DEMO_BOOTSTRAP_UNSAFE" },
+    });
+    const counts = await testEnv.DB.prepare(
+      `SELECT
+         (SELECT count(*) FROM users) AS users,
+         (SELECT count(*) FROM work_sites) AS sites,
+         (SELECT count(*) FROM work_schedules) AS schedules`,
+    ).first<{ users: number; sites: number; schedules: number }>();
+    expect(counts).toEqual({ users: 0, sites: 1, schedules: 0 });
+  });
+
+  it("並行する公開デモ初回ログインも重複・部分投入しない", async () => {
+    await clearApplicationData();
+    const responses = await Promise.all([
+      login(demoLoginRequest("admin@example.test", "AdminDemo!2026")),
+      login(demoLoginRequest("maru.employee@example.test", "DemoPass!2026")),
+    ]);
+    expect(responses.map((response) => response.status)).toEqual([200, 200]);
+    const counts = await testEnv.DB.prepare(
+      `SELECT
+         (SELECT count(*) FROM users) AS users,
+         (SELECT count(*) FROM work_sites) AS sites,
+         (SELECT count(*) FROM work_schedules) AS schedules,
+         (SELECT count(*) FROM attendance_records) AS records,
+         (SELECT count(*) FROM attendance_requests) AS requests,
+         (SELECT count(*) FROM audit_logs) AS audits`,
+    ).first<{
+      users: number;
+      sites: number;
+      schedules: number;
+      records: number;
+      requests: number;
+      audits: number;
+    }>();
+    expect(counts).toEqual({
+      users: 6,
+      sites: 2,
+      schedules: 6,
+      records: 6,
+      requests: 3,
+      audits: 4,
+    });
   });
 
   it("変更APIはCSRFなしを拒否し、本人の申請作成と取消を監査ログへ残す", async () => {

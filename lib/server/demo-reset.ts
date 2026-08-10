@@ -9,11 +9,16 @@ function offsetWorkDate(now: Date, offsetDays: number): string {
   return toJstWorkDate(shifted);
 }
 
-export async function resetDemoAttendanceData(input: {
+export interface DemoAttendanceResetInput {
   database: D1Database;
   actorUserId: string;
   now?: Date;
-}): Promise<void> {
+  source?: "admin_reset" | "empty_d1_bootstrap";
+}
+
+export function buildDemoAttendanceResetStatements(
+  input: DemoAttendanceResetInput,
+): D1PreparedStatement[] {
   const now = input.now ?? new Date();
   const createdAt = now.toISOString();
   const today = offsetWorkDate(now, 0);
@@ -212,12 +217,24 @@ export async function resetDemoAttendanceData(input: {
           actor_user_id, created_at)
        VALUES (?, 'demo_dataset', 'primary', 'reset', NULL, ?, ?, ?, ?)`,
       crypto.randomUUID(),
-      JSON.stringify({ workDate: today, state: "seeded" }),
-      "デモデータを初期状態へ戻したため",
+      JSON.stringify({
+        workDate: today,
+        state: "seeded",
+        source: input.source ?? "admin_reset",
+      }),
+      input.source === "empty_d1_bootstrap"
+        ? "空の公開デモD1を初回ログインで初期化したため"
+        : "デモデータを初期状態へ戻したため",
       input.actorUserId,
       createdAt,
     ),
   );
 
-  await input.database.batch(statements);
+  return statements;
+}
+
+export async function resetDemoAttendanceData(
+  input: DemoAttendanceResetInput,
+): Promise<void> {
+  await input.database.batch(buildDemoAttendanceResetStatements(input));
 }

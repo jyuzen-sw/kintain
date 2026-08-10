@@ -22,8 +22,8 @@ OpenAI公式では、Sitesの公開処理は「review可能なversionを保存�
 - commitが引き継ぎ記録と一致しない、またはworktreeがdirty
 - `npm ci`、lint、typecheck、unit、integration、E2E、buildのいずれかが失敗
 - SitesがVinext/Worker artifactまたはD1 bindingを受理しない
-- `0001_initial.sql`、`0002_request_idempotency.sql`、`0003_demo_seed.sql` の順次適用結果を確認できない
-- 実D1へ架空seedを安全に投入する経路が確認できない
+- `0001_initial.sql`、`0002_request_idempotency.sql`、`0003_demo_seed.sql` の同梱順、deploy結果、または実URLでのschema利用を確認できない
+- `0003` または公開デモgate下の空D1限定bootstrapのどちらでも、架空seedを安全に投入・確認できない
 - 実在人物のメール、勤怠、位置情報、credentialが混入
 - environment valueをprompt、添付、source、logへ転記する必要が生じる
 - 一般公開の責任者承認がない
@@ -96,9 +96,9 @@ OpenAI公式showcaseもVinext、Worker互換ESM、D1 `DB`、R2なし、Drizzle s
 
 1. 対象が新規の空D1であることを確認する。
 2. `drizzle/0001_initial.sql`、`drizzle/0002_request_idempotency.sql`、`drizzle/0003_demo_seed.sql` を開き、9テーブル、前進処理、index、架空seedだけの `INSERT` を再確認する。
-3. Sitesが提供するmigration-awareなD1操作経路が、migration名・適用履歴・原子的なファイル適用を保証することを確認する。raw SQLの逐次実行しかできない場合は停止する。
-4. 確認済みの経路で `0001_initial.sql`、`0002_request_idempotency.sql`、`0003_demo_seed.sql` をこの順で各一度だけ適用する。
-5. 3つのmigration名、対象resource、開始・終了時刻、履歴、結果を個別に記録する。
+3. package内の3ファイルとdeploy成功を確認する。Sites connectorが物理D1名、migration履歴、SQL照会を公開しない場合は、その観測制約を結果へ明記し、実URLのAPIでschemaとデータを確認する。
+4. 確認済みの経路で `0001_initial.sql`、`0002_request_idempotency.sql`、`0003_demo_seed.sql` をこの順で各一度だけ同梱・deployする。
+5. 3つのmigration名、開始・終了時刻、deploy結果を記録する。物理resource名とmigration履歴がconnectorから取得不能なら、取得不能と代替検証結果を記録し、推測値を書かない。
 6. 次のテーブルが存在することを確認する。
 
 ```text
@@ -116,26 +116,26 @@ login_rate_limits
 7. `users(normalized_email)`、予定・実績の日次一意制約、打刻冪等key、申請の部分一意制約、外部キーが存在することを確認する。
 8. `attendance_requests.creation_request_id` が `NOT NULL UNIQUE`、`audit_logs.mutation_id` がnullable uniqueであることを確認する。
 
-`0002`は既存の`0001`適用済みD1を前進できるよう申請テーブルを再構築します。`0003`はPhase 2で固定した架空データを空D1へ一度だけ投入する前進データmigrationです。fresh D1では3本すべてを順に適用し、既存データ入りD1へ`0003`を適用しません。migration履歴が不明、部分適用、schema差分、既存データがある場合はdeployを止めます。saved versionのrollbackだけではD1 schema/dataは戻らないため、先にbackup/export手段と復旧責任者を確認します。
+`0002`は既存の`0001`適用済みD1を前進できるよう申請テーブルを再構築します。`0003`はPhase 2で固定した架空データを空D1へ一度だけ投入する前進データmigrationです。fresh D1では3本すべてを順に同梱し、既存データ入りD1へ`0003`を適用しません。connectorが履歴を公開しないこと自体は観測制約として記録し、deploy失敗、schema差分、部分適用の兆候、または既存データがある場合はdeployを止めます。saved versionのrollbackだけではD1 schema/dataは戻らないため、先にbackup/export手段と復旧責任者を確認します。
 
 ## 5. 架空seedを実D1へ投入する
 
 `scripts/local-db.ts` の `seed` と `reset` は誤操作防止のため `--local` 固定です。Phase 2では、レビュー済みの生成結果を `drizzle/0003_demo_seed.sql` として固定し、Sites標準packageが `dist/.openai/drizzle/` へ同梱するmigration-aware経路で実D1へ一度だけ適用します。ローカルscriptを実D1へ向けません。
 
-1. 対象が新規の空D1であり、`0003_demo_seed.sql` が未適用であることを確認する。
+1. 新規Siteとして空D1を意図していることを確認する。connectorから実データを照会できない場合は、その制約を記録して既存Siteへ流用しない。
 2. ローカルpassword上書き用の環境変数が設定されていないことを確認する。
 3. `0003_demo_seed.sql` が7つの `INSERT` だけで構成され、実在ドメイン、実名、実勤怠、実GPSを含まないことを確認する。
 4. 6架空user、2架空site、当日・前日の予定、勤務中・退勤済み・出勤前・病欠承認済み、合成GPS状態、pending・approved・rejectedの申請例、監査例を確認する。
 5. 必要に応じて `npm run --silent db:seed:render` を一時出力し、構造と架空シナリオが一致することを確認する。saltと生成日時が毎回変わるため、byte一致は要求しない。
 6. package内に `0001_initial.sql`、`0002_request_idempotency.sql`、`0003_demo_seed.sql` がこの番号順で存在することを確認する。
-7. Sitesのmigration-aware経路で3本を適用し、`0003` の履歴と成功結果を確認する。履歴・ファイル単位適用を確認できない場合は停止する。
+7. Sitesのmigration-aware経路で3本を同梱・deployする。connectorから履歴を照会できない場合は、deploy結果と実URLのschema利用を記録する。
 8. user、site、schedule、record、punch、request、auditの件数と参照整合性をアプリ挙動または承認済みD1照会で確認する。
-9. 架空accountで通常のlogin APIを通過できることを確認する。
-10. 初回deploy直後に管理者の `POST /api/admin/reset` を実行し、固定生成日の勤怠シナリオを実行日のJSTへ揃える。
+9. 架空accountで通常のlogin APIを通過できることを確認する。schemaは利用できても全架空accountが401となる場合は、3つの公開デモgateが有効で8つのアプリ表（`login_rate_limits`を除く）が合計0件のときだけ動く `ensurePublicDemoBootstrap()` を使う互換性versionへ切り替える。この処理は既定user・siteと当日シナリオを1つのD1 batchで作成する。既存userがあればno-op、userなしの部分状態なら503で停止する。
+10. 初回login後に管理者の `POST /api/admin/reset` を実行し、当日シナリオへ戻ることと再実行性を確認する。
 
-`0003` は既存データ入りD1へ再適用しません。部分適用や履歴不明の場合は盲目的に再実行せず、事前承認した空D1の再作成またはbackupからのrestoreへ戻ります。`db:seed:local` は非空ローカルDBを拒否し、`db:reset:local` は既存データを明示的に消してから全migrationと動的seedを再現します。
+`0003` は既存データ入りD1へ再適用しません。部分適用の兆候がある場合は盲目的に再実行せず、事前承認した空D1の再作成またはbackupからのrestoreへ戻ります。履歴がconnectorから取得不能なら、その事実と実URLの代替検証を記録します。`db:seed:local` は非空ローカルDBを拒否し、`db:reset:local` は既存データを明示的に消してから全migrationと動的seedを再現します。
 
-管理者の `POST /api/admin/reset` は空D1の初回bootstrapではありません。`0003` が作成した既存user・siteを前提に、勤怠系の架空データを戻す日常デモ用です。
+管理者の `POST /api/admin/reset` 自体は空D1の初回bootstrapではありません。初回bootstrapは、公開デモgate下のlogin POSTが8つのアプリ表の合計0件を確認した場合だけ、既定user・siteの作成と同じreset statement群を原子的に実行し、監査理由に自動初期化と記録します。部分状態は変更せず停止します。通常のreset APIは既存user・siteを前提に、勤怠系の架空データを戻す日常デモ用です。
 
 ## 6. hosted environment valuesを設定する
 
