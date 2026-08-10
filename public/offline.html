@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+    <meta name="theme-color" content="#0B6B63" />
+    <title>オフライン | 勤怠</title>
+    <style>
+      * { box-sizing: border-box; }
+      html { background: #f6f1e7; color: #172e30; font-family: "Noto Sans JP", "Hiragino Sans", "Yu Gothic UI", system-ui, sans-serif; }
+      body { display: grid; min-height: 100vh; min-height: 100dvh; place-items: center; margin: 0; padding: max(24px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left)); }
+      main { width: min(100%, 440px); padding: 32px 24px; border: 1px solid #d6d9d2; border-radius: 20px; background: #fffcf5; text-align: center; }
+      img { width: 72px; height: 72px; }
+      h1 { margin: 20px 0 8px; font-size: 24px; line-height: 1.4; }
+      p { margin: 0; color: #526260; line-height: 1.6; }
+      button { min-width: 160px; min-height: 48px; margin-top: 24px; padding: 10px 18px; border: 1px solid #0b6b63; border-radius: 10px; background: #0b6b63; color: #fff; font: inherit; font-weight: 700; }
+      button:focus-visible { outline: 2px solid #147d73; outline-offset: 3px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <img src="/icon.svg" alt="" />
+      <h1>現在オフラインです</h1>
+      <p>打刻や保存は行われていません。通信接続後にもう一度お試しください。</p>
+      <button type="button" onclick="location.reload()">接続を確認する</button>
+    </main>
+  </body>
+</html>

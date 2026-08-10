@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="勤怠">
+  <rect width="512" height="512" fill="#0B6B63"/>
+  <path d="M108 150c0-23.2 18.8-42 42-42h212c23.2 0 42 18.8 42 42v212c0 23.2-18.8 42-42 42H150c-23.2 0-42-18.8-42-42V150Z" fill="#FFFCF5"/>
+  <circle cx="256" cy="250" r="105" fill="#DDEFEA" stroke="#172E30" stroke-width="22"/>
+  <path d="M256 184v70l48 30" fill="none" stroke="#0B6B63" stroke-linecap="round" stroke-linejoin="round" stroke-width="24"/>
+  <circle cx="256" cy="250" r="12" fill="#0B6B63"/>
+  <path d="M176 374h160" fill="none" stroke="#C27A13" stroke-linecap="round" stroke-width="18"/>
+</svg>

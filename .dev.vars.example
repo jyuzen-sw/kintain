@@ -1,0 +1,4 @@
+# 公開可能な架空デモを明示的に有効化する非Secret設定です。
+DEMO_MODE=true
+ALLOW_PUBLIC_DEMO=true
+SHOW_DEMO_CREDENTIALS=true
