@@ -11,23 +11,99 @@ const localAdminPassword = process.env.LOCAL_DEMO_ADMIN_PASSWORD ?? "AdminDemo!2
 
 type Command = "seed" | "reset" | "render";
 type SqlValue = string | number | null;
+type D1QueryResult<Row> = {
+  results?: Row[];
+  success: boolean;
+};
 
 function readCommand(value: string | undefined): Command {
   if (value === "seed" || value === "reset" || value === "render") return value;
   throw new Error("Usage: scripts/local-db.ts <seed|reset|render>");
 }
 
+function wranglerEnvironment(): NodeJS.ProcessEnv {
+  const environment = { ...process.env };
+  delete environment.WRANGLER_LOG;
+  return {
+    ...environment,
+    WRANGLER_SEND_METRICS: "false",
+    WRANGLER_WRITE_LOGS: "false",
+  };
+}
+
 function runWrangler(args: string[]): void {
-  const executable = resolve("node_modules/.bin/wrangler");
-  const result = spawnSync(executable, args, {
+  const executable = resolve("node_modules/wrangler/bin/wrangler.js");
+  const result = spawnSync(process.execPath, [executable, ...args], {
     cwd: process.cwd(),
     encoding: "utf8",
+    env: wranglerEnvironment(),
     stdio: "inherit",
   });
   if (result.error) throw result.error;
   if (result.status !== 0) {
     throw new Error(`wrangler exited with status ${result.status ?? "unknown"}`);
   }
+}
+
+function queryLocalDatabase<Row>(sql: string): Row[] {
+  const executable = resolve("node_modules/wrangler/bin/wrangler.js");
+  const result = spawnSync(
+    process.execPath,
+    [
+      executable,
+      "d1",
+      "execute",
+      databaseBinding,
+      "--local",
+      "--command",
+      sql,
+      "--json",
+    ],
+    {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: wranglerEnvironment(),
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(
+      `wrangler query exited with status ${result.status ?? "unknown"}: ${result.stderr.trim()}`,
+    );
+  }
+
+  const response = JSON.parse(result.stdout) as D1QueryResult<Row>[];
+  if (!Array.isArray(response) || response.some((item) => item.success !== true)) {
+    throw new Error("Local D1 query did not complete successfully");
+  }
+  return response.flatMap((item) => item.results ?? []);
+}
+
+function localApplicationSchemaExists(): boolean {
+  const [row] = queryLocalDatabase<{ table_count: number }>(`
+    SELECT COUNT(*) AS table_count
+    FROM sqlite_master
+    WHERE type = 'table' AND name = 'users'
+  `);
+  return Number(row?.table_count ?? 0) > 0;
+}
+
+function localApplicationRowCount(): number {
+  const [row] = queryLocalDatabase<{ row_count: number }>(`
+    SELECT
+      (SELECT COUNT(*) FROM users) +
+      (SELECT COUNT(*) FROM work_sites) +
+      (SELECT COUNT(*) FROM work_schedules) +
+      (SELECT COUNT(*) FROM attendance_records) +
+      (SELECT COUNT(*) FROM punch_events) +
+      (SELECT COUNT(*) FROM attendance_requests) +
+      (SELECT COUNT(*) FROM audit_logs) +
+      (SELECT COUNT(*) FROM sessions) +
+      (SELECT COUNT(*) FROM login_rate_limits)
+      AS row_count
+  `);
+  return Number(row?.row_count ?? 0);
 }
 
 function executeSql(sql: string): void {
@@ -335,8 +411,17 @@ async function main(): Promise<void> {
     process.stdout.write(`${await seedSql()}\n`);
     return;
   }
+
+  const schemaExists = localApplicationSchemaExists();
+  if (command === "seed" && schemaExists && localApplicationRowCount() > 0) {
+    throw new Error(
+      "Local D1 already contains application data. Use `npm run db:reset:local` instead.",
+    );
+  }
+
+  if (command === "reset" && schemaExists) executeSql(resetSql());
   runWrangler(["d1", "migrations", "apply", databaseBinding, "--local"]);
-  if (command === "reset") executeSql(resetSql());
+  executeSql(resetSql());
   executeSql(await seedSql());
 }
 

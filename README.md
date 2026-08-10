@@ -64,17 +64,17 @@ npm run dev
 | `npm run test:integration` | Workers runtime＋ローカルD1の結合テスト |
 | `npm run test:e2e` | Playwright E2E |
 | `npm run test:coverage` | coverage取得 |
-| `npm run db:migrate:local` | `0001_initial.sql`、`0002_request_idempotency.sql` を順にローカルD1へ適用 |
+| `npm run db:migrate:local` | `0001_initial.sql`、`0002_request_idempotency.sql`、`0003_demo_seed.sql` を順にローカルD1へ適用 |
 | `npm run db:seed:local` | 空のローカルD1へ架空seedを投入 |
-| `npm run db:seed:render` | D1へ接続せず、Phase 2レビュー用の架空seed SQLを標準出力へ生成 |
+| `npm run db:seed:render` | D1へ接続せず、架空seed SQLを検証・再生成するため標準出力へ生成 |
 | `npm run db:reset:local` | ローカルD1を初期架空データへ戻す |
 
-`db:seed:local` は既存seedへの重複投入を意図していません。通常は再実行可能な `db:reset:local` を使います。
+`db:seed:local` は既存seedへの重複投入を意図していません。通常は再実行可能な `db:reset:local` を使います。特に、`0003_demo_seed.sql` が未適用で既存データのあるローカルD1には `db:migrate:local` を使わず、`db:reset:local` で安全に初期化してください。
 
 ## データと環境設定
 
 - D1 bindingはコード、Wrangler、Sites manifestのすべてで `DB` に固定しています。
-- schemaは [`db/schema.ts`](./db/schema.ts)、migrationは [`drizzle/0001_initial.sql`](./drizzle/0001_initial.sql) → [`drizzle/0002_request_idempotency.sql`](./drizzle/0002_request_idempotency.sql) の順です。
+- schemaは [`db/schema.ts`](./db/schema.ts)、migrationは [`drizzle/0001_initial.sql`](./drizzle/0001_initial.sql) → [`drizzle/0002_request_idempotency.sql`](./drizzle/0002_request_idempotency.sql) → [`drizzle/0003_demo_seed.sql`](./drizzle/0003_demo_seed.sql) の順です。`0003` は空の実D1へ一度だけ適用する架空デモデータ移行です。
 - UTC日時はISO 8601のTEXT、勤務日はAsia/Tokyo基準の `YYYY-MM-DD` で保存します。
 - ローカルD1状態、ローカル環境ファイル、実環境値はGit管理しません。
 - hosted environment valuesはPhase 2でSitesの設定画面から登録し、値をprompt、添付、manifest、文書、ログへ転記しません。[OpenAI Sites documentation](https://learn.chatgpt.com/docs/sites)

@@ -7,13 +7,18 @@ const port = process.env.E2E_PORT ?? "4173";
 const runtimeEnvironment = {
   ...process.env,
   WRANGLER_LOG: "none",
-  WRANGLER_LOG_PATH: "/tmp/kintain-e2e-wrangler.log",
+  WRANGLER_LOG_PATH: resolve(".wrangler/logs/kintain-e2e-wrangler.log"),
   WRANGLER_SEND_METRICS: "false",
-  XDG_CONFIG_HOME: "/tmp/kintain-e2e-config",
+  XDG_CONFIG_HOME: resolve(".wrangler/config"),
 };
 
+const npmExecutable = process.env.npm_execpath;
+if (!npmExecutable) {
+  throw new Error("npm_execpath is required to run the E2E production build");
+}
+
 const buildStartedAt = Date.now();
-const build = spawnSync("npm", ["run", "build"], {
+const build = spawnSync(process.execPath, [npmExecutable, "run", "build"], {
   cwd: process.cwd(),
   encoding: "utf8",
   env: runtimeEnvironment,
@@ -43,8 +48,9 @@ if (!buildOutputReady) {
 }
 
 const wrangler = spawn(
-  resolve("node_modules/.bin/wrangler"),
+  process.execPath,
   [
+    resolve("node_modules/wrangler/bin/wrangler.js"),
     "dev",
     "--config",
     wranglerConfig,

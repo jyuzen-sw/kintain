@@ -33,7 +33,7 @@
 - R2: 未使用
 - Sites manifest: `.openai/hosting.json`
 - Drizzle schema: `db/schema.ts`
-- migration: `drizzle/0001_initial.sql` → `drizzle/0002_request_idempotency.sql`
+- migration: `drizzle/0001_initial.sql` → `drizzle/0002_request_idempotency.sql` → `drizzle/0003_demo_seed.sql`（`0003`はPhase 2互換性commitで追加した空D1用の架空データmigration）
 - D1取得箇所: `lib/server/db.ts` に集約
 
 OpenAI公式showcaseも、SitesのVinext starter、Worker互換ESM、D1 `DB`、R2なし、Drizzle schema/migration、binding helperを示しています。[OpenAI Sites showcase: Sparkboard](https://learn.chatgpt.com/showcase/idea-intake)
@@ -58,6 +58,8 @@ OpenAI公式showcaseも、SitesのVinext starter、Worker互換ESM、D1 `DB`、R
 | visual QA | Playwright対象viewport＋手動確認 | 4 viewport×10画面＝40 PNG。代表6画面で横overflow・未完了loading・表示崩れなし |
 | production依存監査 | `npm audit --omit=dev` | Vinext固定依存に既知high 3件。既知制約へ記録済み |
 
+上表はPhase 1時点の履歴です。Phase 2では実D1 bootstrapのため `0003_demo_seed.sql` とローカル互換性修正を独立commitへ追加し、全検査を再実行して `SITES_DEPLOYMENT_RESULT.md` に記録します。
+
 Phase 2の再現順:
 
 ```bash
@@ -80,12 +82,13 @@ build後のローカルpreviewは `npm run start` です。
 
 binding名は `DB` から変更しません。実resource IDはリポジトリへ書きません。
 
-適用順は次の2本です。順序を入れ替えたり、`0002`を省略したりしません。
+適用順は次の3本です。順序を入れ替えたり、途中を省略したりしません。
 
 1. `drizzle/0001_initial.sql`
 2. `drizzle/0002_request_idempotency.sql`
+3. `drizzle/0003_demo_seed.sql`
 
-`0001`は9テーブルの基礎schema、`0002`は既存の`0001`適用済みD1を前進させるmigrationです。`attendance_requests.creation_request_id`を必須・一意として追加し、`audit_logs.mutation_id`をnullable一意として追加します。fresh D1にも必ず2本を順に適用します。
+`0001`は9テーブルの基礎schema、`0002`は既存の`0001`適用済みD1を前進させるmigrationです。`attendance_requests.creation_request_id`を必須・一意として追加し、`audit_logs.mutation_id`をnullable一意として追加します。`0003`はschemaを変えず、レビュー済みの架空データを空D1へ一度だけ投入します。fresh D1には必ず3本を順に適用し、既存データ入りD1へ`0003`を適用しません。
 
 migrationは以下の9テーブル、外部キー、CHECK、検索index、冪等性receipt・楽観lock向け制約を作成します。
 
@@ -112,13 +115,13 @@ npm run db:seed:render
 npm run db:reset:local
 ```
 
-- `db:migrate:local`: pending migrationのみをローカルD1へ適用します。
-- `db:seed:local`: 空DBへ6ユーザー、2現場、予定、勤務状態、GPS状態、申請3状態、監査例を投入します。重複投入用ではありません。
-- `db:seed:render`: D1へ接続せず、同じ架空seedをSQLとして標準出力へ生成します。Phase 2は生成物をレビューしてからSitesの承認済み実D1経路で適用します。
-- `db:reset:local`: migration適用後、ローカルの対象テーブルを外部キー順に空にしてseedを再投入します。
+- `db:migrate:local`: pending migrationのみをローカルD1へ適用します。`0003`がpendingの既存データ入りDBでは使わず、`db:reset:local`を使います。
+- `db:seed:local`: 全migrationを適用し、空ローカルDBへ6ユーザー、2現場、予定、勤務状態、GPS状態、申請3状態、監査例を動的に投入します。非空DBへの重複投入は明示的に拒否します。
+- `db:seed:render`: D1へ接続せず、同じ架空seedをSQLとして標準出力へ生成します。Phase 2では生成物をレビューし、その固定結果を `0003_demo_seed.sql` として同梱します。
+- `db:reset:local`: 既存ローカルデータを外部キー順に空にし、全migrationを適用した後、固定migration seedを動的な当日データへ置き換えます。
 - `LOCAL_DEMO_EMPLOYEE_PASSWORD` と `LOCAL_DEMO_ADMIN_PASSWORD` はローカルseedの上書き専用です。hosted環境へ登録しません。
 
-`seed` と `reset` subcommandは意図的にWranglerの `--local` だけを使用します。`render` subcommandはD1へ接続しません。Phase 2はrenderしたSQLを内容確認し、Sitesが提供する承認済み実D1操作経路から適用します。ローカルscriptを無断でremote向けに変更しないでください。
+`seed` と `reset` subcommandは意図的にWranglerの `--local` だけを使用します。`render` subcommandはD1へ接続しません。実D1への適用は、Sites標準packageに同梱した `0001` → `0002` → `0003` のmigration-aware経路だけを使います。ローカルscriptをremote向けに変更しないでください。
 
 ### 4.3 アプリ内reset
 
