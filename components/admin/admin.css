@@ -379,7 +379,21 @@
 }
 
 .admin-action-link--danger { color: var(--color-danger); }
+.admin-action-link:disabled {
+  color: var(--color-ink-muted);
+  cursor: not-allowed;
+  opacity: 0.72;
+}
 .admin-inline-actions { display: flex; gap: 12px; }
+.admin-row-actions,
+.admin-schedule-action { display: grid; justify-items: start; }
+.admin-row-actions { gap: 2px; }
+.admin-schedule-lock {
+  max-width: 230px;
+  color: var(--color-ink-muted);
+  font-size: 11px;
+  line-height: 16px;
+}
 
 .admin-card-list {
   display: grid;
@@ -514,6 +528,12 @@
 .admin-modal__actions .button { width: 100%; }
 .admin-form-stack { display: grid; gap: 18px; }
 .admin-form-grid { display: grid; gap: 14px; }
+.admin-form-help {
+  margin: 0;
+  color: var(--color-ink-muted);
+  font-size: 12px;
+  line-height: 19px;
+}
 
 .admin-month-picker {
   display: grid;
@@ -633,6 +653,7 @@
   .admin-modal { inset: 0; margin: auto; border-radius: var(--radius-lg); padding: 24px; }
   .admin-modal__actions { flex-direction: row; justify-content: flex-end; }
   .admin-modal__actions .button { width: auto; }
+  .admin-modal__actions--schedule .button--danger:first-child { margin-right: auto; }
   .admin-form-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .admin-employee-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
@@ -649,8 +670,8 @@
   .admin-header { min-height: 64px; }
   .admin-header__top { min-height: 63px; padding-inline: 32px; }
   .admin-nav { position: absolute; inset: 0; border-top: 0; pointer-events: none; }
-  .admin-nav__inner { min-height: 63px; justify-content: center; padding-inline: 220px 280px; pointer-events: auto; }
-  .admin-nav a { min-height: 63px; border-radius: 0; }
+  .admin-nav__inner { min-height: 63px; justify-content: center; padding-inline: 220px 280px; }
+  .admin-nav a { min-height: 63px; border-radius: 0; pointer-events: auto; }
   .admin-global-notice,
   .admin-content { padding-inline: 32px; }
   .admin-content { padding-block: 36px 64px; }

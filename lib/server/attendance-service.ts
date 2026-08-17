@@ -6,6 +6,7 @@ import type {
   MonthAttendanceDay,
   SessionUser,
   TodayAttendanceResponse,
+  WorkScheduleSummary,
 } from "@/lib/contracts/types";
 import {
   assertCanClockIn,
@@ -15,10 +16,16 @@ import {
   AttendanceValidationError,
 } from "@/lib/domain/attendance";
 import {
+  DateTimeValidationError,
   getJapaneseWeekday,
   parseWorkDate,
   toJstWorkDate,
 } from "@/lib/domain/datetime";
+import {
+  getScheduleMutationState,
+  validateWorkSchedule,
+  WorkScheduleValidationError,
+} from "@/lib/domain/schedules";
 import {
   assertRequestCanBeApproved,
   assertRequestCategory,
@@ -32,6 +39,7 @@ import {
   D1AttendanceRepository,
   type PunchLocationInput,
   type RecordMutationReceipt,
+  type ScheduleMutationReceipt,
 } from "@/lib/repositories/d1-attendance-repository";
 import { HttpError } from "@/lib/server/http";
 
@@ -52,6 +60,12 @@ function domainError(error: unknown): never {
   }
   if (error instanceof AttendanceRequestValidationError) {
     throw new HttpError(409, error.code, error.message);
+  }
+  if (error instanceof WorkScheduleValidationError) {
+    throw new HttpError(422, error.code, error.message);
+  }
+  if (error instanceof DateTimeValidationError) {
+    throw new HttpError(422, error.code, error.message);
   }
   throw error;
 }
@@ -151,6 +165,72 @@ function isSamePunchOperation(
     existing.accuracy_meters === attempted.location.accuracyMeters &&
     existing.captured_at === attempted.location.capturedAt
   );
+}
+
+interface ScheduleMutationAttempt {
+  actorUserId: string;
+  userId: string;
+  workDate: string;
+  scheduleId: string | null;
+  expectedVersion: number | null;
+  siteId: string;
+  scheduledStartAt: string;
+  scheduledEndAt: string;
+  scheduledBreakMinutes: number | null;
+  note: string | null;
+}
+
+function isSameScheduleSaveMutation(
+  receipt: ScheduleMutationReceipt,
+  attempted: ScheduleMutationAttempt,
+): boolean {
+  const expectedAction = attempted.scheduleId === null ? "create" : "update";
+  return (
+    receipt.action === expectedAction &&
+    receipt.actorUserId === attempted.actorUserId &&
+    receipt.userId === attempted.userId &&
+    receipt.workDate === attempted.workDate &&
+    (attempted.scheduleId === null || receipt.scheduleId === attempted.scheduleId) &&
+    receipt.expectedVersion === attempted.expectedVersion &&
+    receipt.siteId === attempted.siteId &&
+    receipt.scheduledStartAt === attempted.scheduledStartAt &&
+    receipt.scheduledEndAt === attempted.scheduledEndAt &&
+    receipt.scheduledBreakMinutes === attempted.scheduledBreakMinutes &&
+    receipt.note === attempted.note
+  );
+}
+
+function isSameScheduleDeleteMutation(
+  receipt: ScheduleMutationReceipt,
+  attempted: {
+    actorUserId: string;
+    userId: string;
+    workDate: string;
+    scheduleId: string;
+    expectedVersion: number;
+  },
+): boolean {
+  return (
+    receipt.action === "delete" &&
+    receipt.actorUserId === attempted.actorUserId &&
+    receipt.userId === attempted.userId &&
+    receipt.workDate === attempted.workDate &&
+    receipt.scheduleId === attempted.scheduleId &&
+    receipt.expectedVersion === attempted.expectedVersion
+  );
+}
+
+function scheduleFromReceipt(receipt: ScheduleMutationReceipt): WorkScheduleSummary {
+  return {
+    id: receipt.scheduleId,
+    workDate: receipt.workDate,
+    scheduledStartAt: receipt.scheduledStartAt,
+    scheduledEndAt: receipt.scheduledEndAt,
+    scheduledBreakMinutes: receipt.scheduledBreakMinutes,
+    site: { id: receipt.siteId, name: receipt.siteName },
+    note: receipt.note,
+    version: receipt.resultVersion,
+  };
 }
 
 export class AttendanceService {
@@ -450,6 +530,274 @@ export class AttendanceService {
     const updated = await this.repository.findRecordById(input.recordId);
     if (!updated) throw new HttpError(404, "ATTENDANCE_NOT_FOUND", "勤怠実績が見つかりません。");
     return updated;
+  }
+
+  async saveWorkSchedule(input: {
+    actor: SessionUser;
+    userId: string;
+    workDate: string;
+    scheduleId: string | null;
+    expectedVersion: number | null;
+    siteId: string;
+    scheduledStartAt: string;
+    scheduledEndAt: string;
+    scheduledBreakMinutes: number | null;
+    note: string | null;
+    mutationId: string;
+  }): Promise<WorkScheduleSummary> {
+    if (input.actor.role !== "admin") {
+      throw new HttpError(403, "FORBIDDEN", "管理者だけが勤務予定を変更できます。");
+    }
+    const creating = input.scheduleId === null && input.expectedVersion === null;
+    const updating = input.scheduleId !== null && input.expectedVersion !== null;
+    if (!creating && !updating) {
+      throw new HttpError(
+        422,
+        "INVALID_SCHEDULE_VERSION",
+        "勤務予定の識別子とversionを確認してください。",
+      );
+    }
+
+    try {
+      parseWorkDate(input.workDate);
+      validateWorkSchedule({
+        workDate: input.workDate,
+        scheduledStartAt: input.scheduledStartAt,
+        scheduledEndAt: input.scheduledEndAt,
+        scheduledBreakMinutes: input.scheduledBreakMinutes,
+      });
+    } catch (error) {
+      domainError(error);
+    }
+
+    const attempted: ScheduleMutationAttempt = {
+      actorUserId: input.actor.id,
+      userId: input.userId,
+      workDate: input.workDate,
+      scheduleId: input.scheduleId,
+      expectedVersion: input.expectedVersion,
+      siteId: input.siteId,
+      scheduledStartAt: input.scheduledStartAt,
+      scheduledEndAt: input.scheduledEndAt,
+      scheduledBreakMinutes: input.scheduledBreakMinutes,
+      note: input.note,
+    };
+    const repeated = await this.repository.findScheduleMutationById(input.mutationId);
+    if (repeated) {
+      if (isSameScheduleSaveMutation(repeated, attempted)) {
+        return scheduleFromReceipt(repeated);
+      }
+      throw idempotencyKeyReused();
+    }
+    if (await this.repository.isMutationIdInUse(input.mutationId)) {
+      throw idempotencyKeyReused();
+    }
+
+    const [employee, site, current, record, request] = await Promise.all([
+      this.repository.findActiveEmployee(input.userId),
+      this.repository.findActiveSite(input.siteId),
+      this.repository.findSchedule(input.userId, input.workDate),
+      this.repository.findRecord(input.userId, input.workDate),
+      this.repository.findRequestForWorkDate(input.userId, input.workDate),
+    ]);
+    if (!employee) {
+      throw new HttpError(404, "EMPLOYEE_NOT_FOUND", "従業員が見つかりません。");
+    }
+    if (!site) {
+      throw new HttpError(422, "WORK_SITE_NOT_AVAILABLE", "選択した現場は利用できません。");
+    }
+    const mutationState = getScheduleMutationState({ record, request });
+    if (!mutationState.allowed) {
+      throw new HttpError(409, "SCHEDULE_LOCKED", mutationState.reason ?? "勤務予定を変更できません。");
+    }
+
+    if (creating && current) {
+      throw new HttpError(
+        409,
+        "SCHEDULE_VERSION_CONFLICT",
+        "勤務予定が既に登録されています。最新内容を確認してください。",
+      );
+    }
+    if (
+      updating &&
+      (!current ||
+        current.id !== input.scheduleId ||
+        current.version !== input.expectedVersion)
+    ) {
+      throw new HttpError(
+        409,
+        "SCHEDULE_VERSION_CONFLICT",
+        "勤務予定が更新されています。最新内容を確認してください。",
+      );
+    }
+
+    let succeeded = false;
+    try {
+      succeeded = creating
+        ? await this.repository.createWorkSchedule({
+            scheduleId: crypto.randomUUID(),
+            userId: input.userId,
+            workDate: input.workDate,
+            site,
+            scheduledStartAt: input.scheduledStartAt,
+            scheduledEndAt: input.scheduledEndAt,
+            scheduledBreakMinutes: input.scheduledBreakMinutes,
+            note: input.note,
+            actorUserId: input.actor.id,
+            mutationId: input.mutationId,
+            now: this.now().toISOString(),
+          })
+        : await this.repository.updateWorkSchedule({
+            before: current as WorkScheduleSummary,
+            userId: input.userId,
+            site,
+            scheduledStartAt: input.scheduledStartAt,
+            scheduledEndAt: input.scheduledEndAt,
+            scheduledBreakMinutes: input.scheduledBreakMinutes,
+            note: input.note,
+            actorUserId: input.actor.id,
+            mutationId: input.mutationId,
+            now: this.now().toISOString(),
+          });
+    } catch (error) {
+      if (!isUniqueConstraintError(error)) throw error;
+    }
+    if (!succeeded) {
+      const concurrentlyCompleted = await this.repository.findScheduleMutationById(
+        input.mutationId,
+      );
+      if (concurrentlyCompleted) {
+        if (isSameScheduleSaveMutation(concurrentlyCompleted, attempted)) {
+          return scheduleFromReceipt(concurrentlyCompleted);
+        }
+        throw idempotencyKeyReused();
+      }
+      if (await this.repository.isMutationIdInUse(input.mutationId)) {
+        throw idempotencyKeyReused();
+      }
+      const [latestRecord, latestRequest] = await Promise.all([
+        this.repository.findRecord(input.userId, input.workDate),
+        this.repository.findRequestForWorkDate(input.userId, input.workDate),
+      ]);
+      const latestState = getScheduleMutationState({
+        record: latestRecord,
+        request: latestRequest,
+      });
+      if (!latestState.allowed) {
+        throw new HttpError(409, "SCHEDULE_LOCKED", latestState.reason ?? "勤務予定を変更できません。");
+      }
+      throw new HttpError(
+        409,
+        "SCHEDULE_VERSION_CONFLICT",
+        "勤務予定が更新されています。最新内容を確認してください。",
+      );
+    }
+
+    const saved = await this.repository.findSchedule(input.userId, input.workDate);
+    if (!saved) {
+      throw new HttpError(404, "SCHEDULE_NOT_FOUND", "保存した勤務予定が見つかりません。");
+    }
+    return saved;
+  }
+
+  async deleteWorkSchedule(input: {
+    actor: SessionUser;
+    userId: string;
+    workDate: string;
+    scheduleId: string;
+    expectedVersion: number;
+    mutationId: string;
+  }): Promise<void> {
+    if (input.actor.role !== "admin") {
+      throw new HttpError(403, "FORBIDDEN", "管理者だけが勤務予定を削除できます。");
+    }
+    try {
+      parseWorkDate(input.workDate);
+    } catch (error) {
+      domainError(error);
+    }
+
+    const attempted = {
+      actorUserId: input.actor.id,
+      userId: input.userId,
+      workDate: input.workDate,
+      scheduleId: input.scheduleId,
+      expectedVersion: input.expectedVersion,
+    };
+    const repeated = await this.repository.findScheduleMutationById(input.mutationId);
+    if (repeated) {
+      if (isSameScheduleDeleteMutation(repeated, attempted)) return;
+      throw idempotencyKeyReused();
+    }
+    if (await this.repository.isMutationIdInUse(input.mutationId)) {
+      throw idempotencyKeyReused();
+    }
+
+    const [employee, current, record, request] = await Promise.all([
+      this.repository.findActiveEmployee(input.userId),
+      this.repository.findSchedule(input.userId, input.workDate),
+      this.repository.findRecord(input.userId, input.workDate),
+      this.repository.findRequestForWorkDate(input.userId, input.workDate),
+    ]);
+    if (!employee) {
+      throw new HttpError(404, "EMPLOYEE_NOT_FOUND", "従業員が見つかりません。");
+    }
+    const mutationState = getScheduleMutationState({ record, request });
+    if (!mutationState.allowed) {
+      throw new HttpError(409, "SCHEDULE_LOCKED", mutationState.reason ?? "勤務予定を削除できません。");
+    }
+    if (
+      !current ||
+      current.id !== input.scheduleId ||
+      current.version !== input.expectedVersion
+    ) {
+      throw new HttpError(
+        409,
+        "SCHEDULE_VERSION_CONFLICT",
+        "勤務予定が更新または削除されています。最新内容を確認してください。",
+      );
+    }
+
+    let succeeded = false;
+    try {
+      succeeded = await this.repository.deleteWorkSchedule({
+        before: current,
+        userId: input.userId,
+        actorUserId: input.actor.id,
+        mutationId: input.mutationId,
+        now: this.now().toISOString(),
+      });
+    } catch (error) {
+      if (!isUniqueConstraintError(error)) throw error;
+    }
+    if (succeeded) return;
+
+    const concurrentlyCompleted = await this.repository.findScheduleMutationById(
+      input.mutationId,
+    );
+    if (concurrentlyCompleted) {
+      if (isSameScheduleDeleteMutation(concurrentlyCompleted, attempted)) return;
+      throw idempotencyKeyReused();
+    }
+    if (await this.repository.isMutationIdInUse(input.mutationId)) {
+      throw idempotencyKeyReused();
+    }
+    const [latestRecord, latestRequest] = await Promise.all([
+      this.repository.findRecord(input.userId, input.workDate),
+      this.repository.findRequestForWorkDate(input.userId, input.workDate),
+    ]);
+    const latestState = getScheduleMutationState({
+      record: latestRecord,
+      request: latestRequest,
+    });
+    if (!latestState.allowed) {
+      throw new HttpError(409, "SCHEDULE_LOCKED", latestState.reason ?? "勤務予定を削除できません。");
+    }
+    throw new HttpError(
+      409,
+      "SCHEDULE_VERSION_CONFLICT",
+      "勤務予定が更新または削除されています。最新内容を確認してください。",
+    );
   }
 
   async listRequests(userId?: string): Promise<AttendanceRequestSummary[]> {

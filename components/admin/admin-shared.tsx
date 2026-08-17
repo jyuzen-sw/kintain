@@ -128,9 +128,11 @@ function AttendanceLocations({ row }: { row: AdminAttendanceRow }) {
 }
 
 export function AttendanceResults({
+  onEditSchedule,
   rows,
   showSite = true,
 }: {
+  onEditSchedule?: (row: AdminAttendanceRow) => void;
   rows: AdminAttendanceRow[];
   showSite?: boolean;
 }) {
@@ -179,9 +181,14 @@ export function AttendanceResults({
                 <td><AttendanceLocations row={row} /></td>
                 <td><AttendanceStatus row={row} /></td>
                 <td>
-                  <Link className="admin-row-link" href={`/admin/users/${encodeURIComponent(row.user.id)}`}>
-                    個人実績
-                  </Link>
+                  <div className="admin-row-actions">
+                    {onEditSchedule ? (
+                      <ScheduleAction onEdit={onEditSchedule} row={row} />
+                    ) : null}
+                    <Link className="admin-row-link" href={`/admin/users/${encodeURIComponent(row.user.id)}`}>
+                      個人実績
+                    </Link>
+                  </div>
                 </td>
               </tr>
             ))}
@@ -206,12 +213,42 @@ export function AttendanceResults({
               <div><dt>休憩</dt><dd>{formatMinutes(row.record?.actualBreakMinutes ?? null)} <small>予定 {formatMinutes(row.schedule?.scheduledBreakMinutes ?? null)}</small></dd></div>
             </dl>
             <AttendanceLocations row={row} />
-            <Link className="admin-row-link" href={`/admin/users/${encodeURIComponent(row.user.id)}`}>
-              個人実績を見る
-            </Link>
+            <div className="admin-result-card__actions">
+              {onEditSchedule ? (
+                <ScheduleAction onEdit={onEditSchedule} row={row} />
+              ) : null}
+              <Link className="admin-row-link" href={`/admin/users/${encodeURIComponent(row.user.id)}`}>
+                個人実績を見る
+              </Link>
+            </div>
           </article>;
         })}
       </div>
+    </div>
+  );
+}
+
+function ScheduleAction({
+  onEdit,
+  row,
+}: {
+  onEdit: (row: AdminAttendanceRow) => void;
+  row: AdminAttendanceRow;
+}) {
+  const label = row.schedule ? "予定を編集" : "予定を設定";
+  return (
+    <div className="admin-schedule-action">
+      <button
+        className="admin-action-link"
+        disabled={!row.scheduleMutation.allowed}
+        onClick={() => onEdit(row)}
+        type="button"
+      >
+        {label}
+      </button>
+      {!row.scheduleMutation.allowed && row.scheduleMutation.reason ? (
+        <small className="admin-schedule-lock">{row.scheduleMutation.reason}</small>
+      ) : null}
     </div>
   );
 }

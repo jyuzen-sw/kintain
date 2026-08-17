@@ -5,6 +5,7 @@ import {
   employeeAccounts,
   loginAsAdmin,
   loginAsEmployee,
+  shiftWorkDate,
   waitForClientReady,
 } from "./helpers";
 
@@ -406,6 +407,144 @@ test("管理者が現場を素早く切り替えても、遅い旧応答で最�
   }
 });
 
+test("管理者は日次一覧から勤務予定を登録・修正・監査確認・削除できる", async ({ page }) => {
+  await loginAsAdmin(page);
+  const lockedRow = page.getByRole("row").filter({ hasText: "〇〇さん" });
+  await expect(lockedRow.getByRole("button", { name: "予定を編集" })).toBeDisabled();
+  await expect(lockedRow).toContainText("打刻または入力済みの勤怠実績があるため");
+
+  const dateInput = page.getByLabel("対象日");
+  const futureDate = shiftWorkDate(await dateInput.inputValue(), 1);
+  const futureResponsePromise = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === "/api/admin/today" && url.searchParams.get("date") === futureDate;
+  });
+  await dateInput.fill(futureDate);
+  expect((await futureResponsePromise).status()).toBe(200);
+
+  let employeeRow = page.getByRole("row").filter({ hasText: "〇〇さん" });
+  await employeeRow.getByRole("button", { name: "予定を設定" }).click();
+  let dialog = page.getByRole("dialog");
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByLabel("開始予定")).toHaveValue("09:00");
+  await expect(dialog.getByLabel("終了予定")).toHaveValue("18:00");
+  await expect(dialog.getByLabel("予定休憩（分）")).toHaveValue("60");
+  await expect(dialog.getByLabel("勤務場所")).toHaveValue("");
+
+  await dialog.getByRole("button", { name: "勤務予定を登録する" }).click();
+  await expect(dialog.getByText("勤務場所を選択してください。")).toBeVisible();
+  await dialog.getByLabel("勤務場所").selectOption("site-a");
+  const createResponsePromise = page.waitForResponse(
+    (response) => response.url().includes(`/api/admin/users/user-maru/schedules/${futureDate}`)
+      && response.request().method() === "PUT",
+  );
+  await dialog.getByRole("button", { name: "勤務予定を登録する" }).click();
+  const createResponse = await createResponsePromise;
+  expect(createResponse.status()).toBe(201);
+  expect(createResponse.request().postDataJSON()).toMatchObject({
+    scheduleId: null,
+    version: null,
+    siteId: "site-a",
+    scheduledBreakMinutes: 60,
+  });
+  await expect(page.getByText("勤務予定を登録しました", { exact: true })).toBeVisible();
+  employeeRow = page.getByRole("row").filter({ hasText: "〇〇さん" });
+  await expect(employeeRow).toContainText("A作業場");
+
+  await employeeRow.getByRole("button", { name: "予定を編集" }).click();
+  dialog = page.getByRole("dialog");
+  await dialog.getByLabel("開始予定").fill("09:30");
+  await dialog.getByLabel("終了予定").fill("17:30");
+  await dialog.getByLabel("予定休憩（分）").fill("45");
+  await dialog.getByLabel("備考 任意").fill("短縮勤務");
+  const updateResponsePromise = page.waitForResponse(
+    (response) => response.url().includes(`/api/admin/users/user-maru/schedules/${futureDate}`)
+      && response.request().method() === "PUT",
+  );
+  await dialog.getByRole("button", { name: "変更を保存する" }).click();
+  const updateResponse = await updateResponsePromise;
+  expect(updateResponse.status()).toBe(200);
+  expect(updateResponse.request().postDataJSON()).toMatchObject({
+    version: 1,
+    scheduledBreakMinutes: 45,
+    note: "短縮勤務",
+  });
+  await expect(page.getByText("勤務予定を更新しました", { exact: true })).toBeVisible();
+
+  await page.getByRole("link", { name: "監査ログ", exact: true }).click();
+  const auditResponsePromise = page.waitForResponse((response) => {
+    if (!response.url().includes("/api/admin/audit?")) return false;
+    return new URL(response.url()).searchParams.get("entityType") === "work_schedule";
+  });
+  await page.getByLabel("対象").selectOption("work_schedule");
+  expect((await auditResponsePromise).status()).toBe(200);
+  const updateAudit = page.locator(".admin-audit-entry").filter({
+    hasText: "勤務予定・修正",
+  }).filter({ hasText: "〇〇さん" }).first();
+  await expect(updateAudit).toContainText("開始予定");
+  await expect(updateAudit).toContainText("09:30");
+  await expect(updateAudit).toContainText("予定休憩");
+  await expect(updateAudit).toContainText("45分");
+
+  await page.getByRole("link", { name: "当日", exact: true }).click();
+  const reloadFuturePromise = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === "/api/admin/today" && url.searchParams.get("date") === futureDate;
+  });
+  await page.getByLabel("対象日").fill(futureDate);
+  expect((await reloadFuturePromise).status()).toBe(200);
+  employeeRow = page.getByRole("row").filter({ hasText: "〇〇さん" });
+  await employeeRow.getByRole("button", { name: "予定を編集" }).click();
+  dialog = page.getByRole("dialog");
+  await dialog.getByRole("button", { name: "削除する", exact: true }).click();
+  await expect(dialog.getByText("この勤務予定を削除しますか")).toBeVisible();
+  const deleteResponsePromise = page.waitForResponse(
+    (response) => response.url().includes(`/api/admin/users/user-maru/schedules/${futureDate}`)
+      && response.request().method() === "DELETE",
+  );
+  await dialog.getByRole("button", { name: "勤務予定を削除する" }).click();
+  expect((await deleteResponsePromise).status()).toBe(204);
+  await expect(page.getByText("勤務予定を削除しました", { exact: true })).toBeVisible();
+  await expect(page.getByRole("row").filter({ hasText: "〇〇さん" }).getByRole("button", { name: "予定を設定" })).toBeEnabled();
+
+  const auditResponse = await page.request.get("/api/admin/audit?entityType=work_schedule");
+  expect(auditResponse.status()).toBe(200);
+  const auditBody = await auditResponse.json() as {
+    data: { logs: Array<{ action: string; subjectDisplayName: string | null }> };
+  };
+  expect(auditBody.data.logs).toEqual(expect.arrayContaining([
+    expect.objectContaining({ action: "create", subjectDisplayName: "〇〇さん" }),
+    expect.objectContaining({ action: "update", subjectDisplayName: "〇〇さん" }),
+    expect.objectContaining({ action: "delete", subjectDisplayName: "〇〇さん" }),
+  ]));
+});
+
+test("管理者はデスクトップヘッダーをクリックまたはキーボードで開き、ログアウトできる", async ({ context, page }) => {
+  await loginAsAdmin(page);
+  const adminMenu = page.getByLabel("管理者メニューを開く");
+  await adminMenu.focus();
+  await adminMenu.press("Enter");
+  await expect(page.getByRole("button", { name: "ログアウト" })).toBeVisible();
+  await adminMenu.press("Enter");
+  await expect(page.getByRole("button", { name: "ログアウト" })).toBeHidden();
+
+  await adminMenu.click();
+  const logoutButton = page.getByRole("button", { name: "ログアウト" });
+  await expect(logoutButton).toBeVisible();
+  const logoutResponsePromise = page.waitForResponse(
+    (response) => response.url().endsWith("/api/auth/logout")
+      && response.request().method() === "POST",
+  );
+  await logoutButton.click();
+  expect((await logoutResponsePromise).status()).toBe(200);
+  await page.waitForURL(/\/login(?:\?.*)?$/u);
+  const session = await page.request.get("/api/auth/session");
+  expect(session.status()).toBe(401);
+  const cookieNames = (await context.cookies()).map((cookie) => cookie.name);
+  expect(cookieNames).not.toContain("kintain_session");
+  expect(cookieNames).not.toContain("kintain_csrf");
+});
+
 test("管理者は実認証後、当日・現場・申請・個人実績・監査ログへ移動できる", async ({ page }) => {
   await loginAsAdmin(page);
   await expect(page.getByRole("heading", { name: "当日の勤怠" })).toBeVisible();
@@ -450,7 +589,7 @@ test("管理者は実認証後、当日・現場・申請・個人実績・監�
   expect(filteredAuditResponse.status()).toBe(200);
   expect(new URL(page.url()).searchParams.get("entityId")).toBe("attendance-maru-yesterday");
   await expect(page.getByRole("heading", { name: "監査ログ" })).toBeVisible();
-  await expect(page.getByText("〇〇さんの実績に絞り込み中")).toBeVisible();
+  await expect(page.getByText("〇〇さんの変更に絞り込み中")).toBeVisible();
   await expect(page.locator(".admin-audit-entry")).toHaveCount(1);
 
   await page.getByRole("link", { name: "解除", exact: true }).click();

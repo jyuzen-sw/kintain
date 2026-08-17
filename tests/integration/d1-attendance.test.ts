@@ -5,6 +5,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { GET as getAdminToday } from "@/app/api/admin/today/route";
 import { GET as getAdminAudit } from "@/app/api/admin/audit/route";
+import {
+  DELETE as deleteAdminSchedule,
+  PUT as putAdminSchedule,
+} from "@/app/api/admin/users/[userId]/schedules/[workDate]/route";
 import { POST as login } from "@/app/api/auth/login/route";
 import { GET as getAttendanceAudit } from "@/app/api/me/attendance/[recordId]/audit/route";
 import { POST as punchRoute } from "@/app/api/me/punch/route";
@@ -83,9 +87,9 @@ async function seedSession(
 ): Promise<void> {
   const now = fixedNow.toISOString();
   await testEnv.DB.prepare(
-    `INSERT INTO sessions
+     `INSERT INTO sessions
        (id, user_id, token_hash, csrf_token_hash, expires_at, created_at, last_seen_at)
-     VALUES (?, ?, ?, ?, '2026-08-11T00:00:00.000Z', ?, ?)`,
+     VALUES (?, ?, ?, ?, '2030-08-11T00:00:00.000Z', ?, ?)`,
   )
     .bind(
       `session-${user.id}`,
@@ -571,6 +575,343 @@ describe("D1を使う勤怠フロー", () => {
     expect(
       afterScheduledStart.find((row) => row.user.id === employee.id)?.overdue,
     ).toBe(true);
+  });
+
+  it("管理者だけが勤務予定を登録・更新・削除でき、再送と競合を監査ログ込みで扱う", async () => {
+    await Promise.all([
+      seedSession(employee, "employee-token", "employee-csrf"),
+      seedSession(admin, "admin-token", "admin-csrf"),
+    ]);
+    const workDate = "2026-08-12";
+    const context = {
+      params: Promise.resolve({ userId: employee.id, workDate }),
+    };
+    const createPayload = {
+      scheduleId: null,
+      version: null,
+      siteId: "site-a",
+      scheduledStartAt: "2026-08-12T00:00:00.000Z",
+      scheduledEndAt: "2026-08-12T09:00:00.000Z",
+      scheduledBreakMinutes: 60,
+      note: "新規予定",
+      clientRequestId: "11111111-1111-4111-8111-111111111111",
+    };
+    const requestFor = (
+      token: string,
+      csrfToken: string | null,
+      body: Record<string, unknown>,
+      method: "PUT" | "DELETE" = "PUT",
+    ) => new Request(
+      `http://local.test/api/admin/users/${employee.id}/schedules/${workDate}`,
+      {
+        method,
+        headers: {
+          "content-type": "application/json",
+          cookie: `kintain_session=${token}`,
+          origin: "http://local.test",
+          "sec-fetch-site": "same-origin",
+          ...(csrfToken ? { "x-csrf-token": csrfToken } : {}),
+        },
+        body: JSON.stringify(body),
+      },
+    );
+
+    const employeeRejected = await putAdminSchedule(
+      requestFor("employee-token", "employee-csrf", createPayload),
+      context,
+    );
+    expect(employeeRejected.status).toBe(403);
+
+    const csrfRejected = await putAdminSchedule(
+      requestFor("admin-token", null, createPayload),
+      context,
+    );
+    expect(csrfRejected.status).toBe(403);
+
+    const [createdResponse, repeatedCreate] = await Promise.all([
+      putAdminSchedule(
+        requestFor("admin-token", "admin-csrf", createPayload),
+        context,
+      ),
+      putAdminSchedule(
+        requestFor("admin-token", "admin-csrf", createPayload),
+        context,
+      ),
+    ]);
+    expect(createdResponse.status).toBe(201);
+    expect(repeatedCreate.status).toBe(201);
+    const createdBody = (await createdResponse.json()) as {
+      data: { id: string; version: number; note: string };
+    };
+    expect(createdBody.data).toMatchObject({ version: 1, note: "新規予定" });
+    expect((await repeatedCreate.json()) as unknown).toEqual(createdBody);
+
+    const reusedKey = await putAdminSchedule(
+      requestFor("admin-token", "admin-csrf", {
+        ...createPayload,
+        note: "同じキーの別内容",
+      }),
+      context,
+    );
+    expect(reusedKey.status).toBe(409);
+    expect(await reusedKey.json()).toMatchObject({
+      error: { code: "IDEMPOTENCY_KEY_REUSED" },
+    });
+
+    const updatePayload = {
+      ...createPayload,
+      scheduleId: createdBody.data.id,
+      version: 1,
+      scheduledStartAt: "2026-08-12T00:30:00.000Z",
+      scheduledEndAt: "2026-08-12T08:30:00.000Z",
+      scheduledBreakMinutes: 45,
+      note: "更新予定",
+      clientRequestId: "22222222-2222-4222-8222-222222222222",
+    };
+    const updatedResponse = await putAdminSchedule(
+      requestFor("admin-token", "admin-csrf", updatePayload),
+      context,
+    );
+    expect(updatedResponse.status).toBe(200);
+    const updatedBody = (await updatedResponse.json()) as {
+      data: { id: string; version: number; note: string };
+    };
+    expect(updatedBody.data).toMatchObject({ version: 2, note: "更新予定" });
+
+    const staleResponse = await putAdminSchedule(
+      requestFor("admin-token", "admin-csrf", {
+        ...updatePayload,
+        note: "古い画面からの更新",
+        clientRequestId: "33333333-3333-4333-8333-333333333333",
+      }),
+      context,
+    );
+    expect(staleResponse.status).toBe(409);
+    expect(await staleResponse.json()).toMatchObject({
+      error: { code: "SCHEDULE_VERSION_CONFLICT" },
+    });
+
+    const dailyResponse = await getAdminToday(
+      new Request(`http://local.test/api/admin/today?date=${workDate}`, {
+        headers: { cookie: "kintain_session=admin-token" },
+      }),
+    );
+    const dailyBody = (await dailyResponse.json()) as {
+      data: {
+        rows: Array<{
+          user: { id: string };
+          schedule: { version: number; note: string } | null;
+          scheduleMutation: { allowed: boolean };
+        }>;
+      };
+    };
+    expect(dailyBody.data.rows.find((row) => row.user.id === employee.id)).toMatchObject({
+      schedule: { version: 2, note: "更新予定" },
+      scheduleMutation: { allowed: true },
+    });
+
+    const deletePayload = {
+      scheduleId: createdBody.data.id,
+      version: 2,
+      clientRequestId: "44444444-4444-4444-8444-444444444444",
+    };
+    const deletedResponse = await deleteAdminSchedule(
+      requestFor("admin-token", "admin-csrf", deletePayload, "DELETE"),
+      context,
+    );
+    expect(deletedResponse.status).toBe(204);
+    const repeatedDelete = await deleteAdminSchedule(
+      requestFor("admin-token", "admin-csrf", deletePayload, "DELETE"),
+      context,
+    );
+    expect(repeatedDelete.status).toBe(204);
+
+    const persisted = await testEnv.DB.prepare(
+      "SELECT count(*) AS count FROM work_schedules WHERE user_id = ? AND work_date = ?",
+    ).bind(employee.id, workDate).first<{ count: number }>();
+    expect(persisted?.count).toBe(0);
+
+    const auditResponse = await getAdminAudit(
+      new Request("http://local.test/api/admin/audit?entityType=work_schedule", {
+        headers: { cookie: "kintain_session=admin-token" },
+      }),
+    );
+    const auditBody = (await auditResponse.json()) as {
+      data: {
+        logs: Array<{
+          action: string;
+          subjectUserId: string | null;
+          subjectDisplayName: string | null;
+        }>;
+      };
+    };
+    expect(auditBody.data.logs.map((log) => log.action).sort()).toEqual([
+      "create",
+      "delete",
+      "update",
+    ]);
+    expect(auditBody.data.logs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          subjectUserId: employee.id,
+          subjectDisplayName: employee.displayName,
+        }),
+      ]),
+    );
+  });
+
+  it("既存のTEXT識別子を持つ勤務予定を管理者APIから更新・削除できる", async () => {
+    await seedSession(admin, "admin-token", "admin-csrf");
+    const workDate = "2026-08-12";
+    const scheduleId = "schedule-seeded-text-id";
+    await testEnv.DB.prepare(
+      `INSERT INTO work_schedules
+         (id, user_id, site_id, work_date, scheduled_start_at, scheduled_end_at,
+          scheduled_break_minutes, note)
+       VALUES (?, ?, 'site-a', ?, '2026-08-12T00:00:00.000Z',
+               '2026-08-12T09:00:00.000Z', 60, '既存予定')`,
+    )
+      .bind(scheduleId, employee.id, workDate)
+      .run();
+    const context = {
+      params: Promise.resolve({ userId: employee.id, workDate }),
+    };
+    const requestFor = (
+      body: Record<string, unknown>,
+      method: "PUT" | "DELETE" = "PUT",
+    ) =>
+      new Request(
+        `http://local.test/api/admin/users/${employee.id}/schedules/${workDate}`,
+        {
+          method,
+          headers: {
+            "content-type": "application/json",
+            cookie: "kintain_session=admin-token",
+            origin: "http://local.test",
+            "sec-fetch-site": "same-origin",
+            "x-csrf-token": "admin-csrf",
+          },
+          body: JSON.stringify(body),
+        },
+      );
+
+    const updatedResponse = await putAdminSchedule(
+      requestFor({
+        scheduleId,
+        version: 1,
+        siteId: "site-a",
+        scheduledStartAt: "2026-08-12T00:30:00.000Z",
+        scheduledEndAt: "2026-08-12T08:30:00.000Z",
+        scheduledBreakMinutes: 45,
+        note: "更新予定",
+        clientRequestId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      }),
+      context,
+    );
+    expect(updatedResponse.status).toBe(200);
+    expect(await updatedResponse.json()).toMatchObject({
+      data: { id: scheduleId, version: 2, note: "更新予定" },
+    });
+
+    const deletedResponse = await deleteAdminSchedule(
+      requestFor(
+        {
+          scheduleId,
+          version: 2,
+          clientRequestId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        },
+        "DELETE",
+      ),
+      context,
+    );
+    expect(deletedResponse.status).toBe(204);
+    expect(
+      await testEnv.DB.prepare("SELECT id FROM work_schedules WHERE id = ?")
+        .bind(scheduleId)
+        .first(),
+    ).toBeNull();
+  });
+
+  it("空の勤怠レコードでは勤務予定を変更でき、打刻実績や処理中の申請があると拒否する", async () => {
+    const service = new AttendanceService(testEnv.DB, () => fixedNow);
+    await testEnv.DB.prepare(
+      `INSERT INTO attendance_records
+         (id, user_id, work_date, attendance_category, version)
+       VALUES ('empty-record', ?, '2026-08-13', 'work', 1)`,
+    ).bind(employee.id).run();
+
+    const created = await service.saveWorkSchedule({
+      actor: admin,
+      userId: employee.id,
+      workDate: "2026-08-13",
+      scheduleId: null,
+      expectedVersion: null,
+      siteId: "site-a",
+      scheduledStartAt: "2026-08-13T00:00:00.000Z",
+      scheduledEndAt: "2026-08-13T09:00:00.000Z",
+      scheduledBreakMinutes: 60,
+      note: null,
+      mutationId: "55555555-5555-4555-8555-555555555555",
+    });
+    expect(created.version).toBe(1);
+
+    await testEnv.DB.prepare(
+      `UPDATE attendance_records
+          SET schedule_id = ?, clock_in_at = '2026-08-13T00:00:00.000Z'
+        WHERE id = 'empty-record'`,
+    ).bind(created.id).run();
+    await expect(service.saveWorkSchedule({
+      actor: admin,
+      userId: employee.id,
+      workDate: "2026-08-13",
+      scheduleId: created.id,
+      expectedVersion: 1,
+      siteId: "site-a",
+      scheduledStartAt: "2026-08-13T00:30:00.000Z",
+      scheduledEndAt: "2026-08-13T09:00:00.000Z",
+      scheduledBreakMinutes: 60,
+      note: null,
+      mutationId: "66666666-6666-4666-8666-666666666666",
+    })).rejects.toMatchObject({ status: 409, code: "SCHEDULE_LOCKED" });
+
+    await testEnv.DB.prepare(
+      `INSERT INTO attendance_requests
+         (id, creation_request_id, user_id, work_date, requested_category,
+          reason, status, requested_at, version)
+       VALUES ('schedule-lock-request', '77777777-7777-4777-8777-777777777777', ?,
+               '2026-08-14', 'paid_leave', '私用のため', 'pending',
+               '2026-08-10T00:00:00.000Z', 1)`,
+    ).bind(employee.id).run();
+    await expect(service.saveWorkSchedule({
+      actor: admin,
+      userId: employee.id,
+      workDate: "2026-08-14",
+      scheduleId: null,
+      expectedVersion: null,
+      siteId: "site-a",
+      scheduledStartAt: "2026-08-14T00:00:00.000Z",
+      scheduledEndAt: "2026-08-14T09:00:00.000Z",
+      scheduledBreakMinutes: 60,
+      note: null,
+      mutationId: "88888888-8888-4888-8888-888888888888",
+    })).rejects.toMatchObject({ status: 409, code: "SCHEDULE_LOCKED" });
+
+    await testEnv.DB.prepare(
+      "UPDATE attendance_requests SET status = 'approved' WHERE id = 'schedule-lock-request'",
+    ).run();
+    await expect(service.saveWorkSchedule({
+      actor: admin,
+      userId: employee.id,
+      workDate: "2026-08-14",
+      scheduleId: null,
+      expectedVersion: null,
+      siteId: "site-a",
+      scheduledStartAt: "2026-08-14T00:00:00.000Z",
+      scheduledEndAt: "2026-08-14T09:00:00.000Z",
+      scheduledBreakMinutes: 60,
+      note: null,
+      mutationId: "99999999-9999-4999-8999-999999999999",
+    })).rejects.toMatchObject({ status: 409, code: "SCHEDULE_LOCKED" });
   });
 
   it("本人の実績修正履歴だけを返し、管理者のrecord絞り込みをLIMITより先に適用する", async () => {

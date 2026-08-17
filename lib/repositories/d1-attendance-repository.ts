@@ -11,11 +11,13 @@ import type {
   PunchEventType,
   PunchLocationSummary,
   WorkScheduleSummary,
+  WorkSiteSummary,
 } from "@/lib/contracts/types";
 import {
   determineAttendanceStatus,
   isClockInOverdue,
 } from "@/lib/domain/attendance";
+import { getScheduleMutationState } from "@/lib/domain/schedules";
 
 interface ScheduleRow {
   id: string;
@@ -24,8 +26,25 @@ interface ScheduleRow {
   scheduled_end_at: string;
   scheduled_break_minutes: number | null;
   note: string | null;
+  version: number;
   site_id: string;
   site_name: string;
+}
+
+interface ScheduleMutationRow {
+  entity_id: string;
+  action: "create" | "update" | "delete";
+  actor_user_id: string;
+  user_id: string;
+  work_date: string;
+  expected_version: number | null;
+  site_id: string;
+  site_name: string;
+  scheduled_start_at: string;
+  scheduled_end_at: string;
+  scheduled_break_minutes: number | null;
+  note: string | null;
+  result_version: number;
 }
 
 interface RecordRow {
@@ -139,9 +158,25 @@ export interface RecordMutationReceipt {
   note: string | null;
 }
 
+export interface ScheduleMutationReceipt {
+  scheduleId: string;
+  action: "create" | "update" | "delete";
+  actorUserId: string;
+  userId: string;
+  workDate: string;
+  expectedVersion: number | null;
+  siteId: string;
+  siteName: string;
+  scheduledStartAt: string;
+  scheduledEndAt: string;
+  scheduledBreakMinutes: number | null;
+  note: string | null;
+  resultVersion: number;
+}
+
 export interface AuditLogFilters {
   limit?: number;
-  entityType?: "attendance_record" | "attendance_request";
+  entityType?: "attendance_record" | "attendance_request" | "work_schedule";
   entityId?: string;
 }
 
@@ -153,6 +188,7 @@ function mapSchedule(row: ScheduleRow): WorkScheduleSummary {
     scheduledEndAt: row.scheduled_end_at,
     scheduledBreakMinutes: row.scheduled_break_minutes,
     note: row.note,
+    version: row.version,
     site: { id: row.site_id, name: row.site_name },
   };
 }
@@ -257,6 +293,67 @@ const REQUEST_SELECT = `
     JOIN users u ON u.id = r.user_id
     LEFT JOIN users reviewer ON reviewer.id = r.reviewer_user_id`;
 
+const SCHEDULE_MUTATION_UNLOCKED = `
+  AND NOT EXISTS (
+    SELECT 1
+      FROM attendance_records ar
+     WHERE ar.user_id = ? AND ar.work_date = ?
+       AND (
+         ar.clock_in_at IS NOT NULL
+         OR ar.clock_out_at IS NOT NULL
+         OR ar.actual_break_minutes IS NOT NULL
+         OR ar.attendance_category <> 'work'
+         OR ar.note IS NOT NULL
+         OR ar.version > 1
+         OR EXISTS (
+           SELECT 1 FROM punch_events pe WHERE pe.attendance_record_id = ar.id
+         )
+         OR EXISTS (
+           SELECT 1 FROM audit_logs al
+            WHERE al.entity_type = 'attendance_record'
+              AND al.entity_id = ar.id
+              AND al.action = 'update'
+         )
+       )
+  )
+  AND NOT EXISTS (
+    SELECT 1
+      FROM attendance_requests request
+     WHERE request.user_id = ? AND request.work_date = ?
+       AND request.status IN ('pending', 'approved')
+  )`;
+
+interface ScheduleAuditSnapshot {
+  id: string;
+  userId: string;
+  workDate: string;
+  siteId: string;
+  siteName: string;
+  scheduledStartAt: string;
+  scheduledEndAt: string;
+  scheduledBreakMinutes: number | null;
+  note: string | null;
+  version: number;
+}
+
+function scheduleAuditSnapshot(
+  schedule: WorkScheduleSummary,
+  userId: string,
+): ScheduleAuditSnapshot {
+  return {
+    id: schedule.id,
+    userId,
+    workDate: schedule.workDate,
+    siteId: schedule.site.id,
+    siteName: schedule.site.name,
+    scheduledStartAt: schedule.scheduledStartAt,
+    scheduledEndAt: schedule.scheduledEndAt,
+    scheduledBreakMinutes: schedule.scheduledBreakMinutes,
+    note: schedule.note,
+    version: schedule.version,
+  };
+}
+
 export interface PunchLocationInput {
   state: LocationState;
   latitude: number | null;
@@ -272,7 +369,7 @@ export class D1AttendanceRepository {
     const row = await this.database
       .prepare(
         `SELECT ws.id, ws.work_date, ws.scheduled_start_at, ws.scheduled_end_at,
-                ws.scheduled_break_minutes, ws.note, site.id AS site_id,
+                ws.scheduled_break_minutes, ws.note, ws.version, site.id AS site_id,
                 site.name AS site_name
            FROM work_schedules ws
            JOIN work_sites site ON site.id = ws.site_id
@@ -510,7 +607,7 @@ export class D1AttendanceRepository {
       this.database
         .prepare(
           `SELECT ws.id, ws.work_date, ws.scheduled_start_at, ws.scheduled_end_at,
-                  ws.scheduled_break_minutes, ws.note, site.id AS site_id,
+                  ws.scheduled_break_minutes, ws.note, ws.version, site.id AS site_id,
                   site.name AS site_name
              FROM work_schedules ws JOIN work_sites site ON site.id = ws.site_id
             WHERE ws.user_id = ? AND ws.work_date >= ? AND ws.work_date < ?
@@ -542,6 +639,340 @@ export class D1AttendanceRepository {
       records: recordRows.results.map((row) => mapRecord(row)),
       requests: requestRows.results.map(mapRequest),
     };
+  }
+
+  async findScheduleMutationById(
+    mutationId: string,
+  ): Promise<ScheduleMutationReceipt | null> {
+    const row = await this.database
+      .prepare(
+        `WITH mutation AS (
+           SELECT entity_id, action, actor_user_id, before_json,
+                  CASE WHEN action = 'delete' THEN before_json ELSE after_json END
+                    AS snapshot_json
+             FROM audit_logs
+            WHERE entity_type = 'work_schedule'
+              AND action IN ('create', 'update', 'delete')
+              AND mutation_id = ?
+            LIMIT 1
+         )
+         SELECT entity_id, action, actor_user_id,
+                json_extract(snapshot_json, '$.userId') AS user_id,
+                json_extract(snapshot_json, '$.workDate') AS work_date,
+                CAST(json_extract(before_json, '$.version') AS INTEGER)
+                  AS expected_version,
+                json_extract(snapshot_json, '$.siteId') AS site_id,
+                json_extract(snapshot_json, '$.siteName') AS site_name,
+                json_extract(snapshot_json, '$.scheduledStartAt')
+                  AS scheduled_start_at,
+                json_extract(snapshot_json, '$.scheduledEndAt')
+                  AS scheduled_end_at,
+                json_extract(snapshot_json, '$.scheduledBreakMinutes')
+                  AS scheduled_break_minutes,
+                json_extract(snapshot_json, '$.note') AS note,
+                CAST(json_extract(snapshot_json, '$.version') AS INTEGER)
+                  AS result_version
+           FROM mutation`,
+      )
+      .bind(mutationId)
+      .first<ScheduleMutationRow>();
+    if (!row) return null;
+    return {
+      scheduleId: row.entity_id,
+      action: row.action,
+      actorUserId: row.actor_user_id,
+      userId: row.user_id,
+      workDate: row.work_date,
+      expectedVersion: row.expected_version,
+      siteId: row.site_id,
+      siteName: row.site_name,
+      scheduledStartAt: row.scheduled_start_at,
+      scheduledEndAt: row.scheduled_end_at,
+      scheduledBreakMinutes: row.scheduled_break_minutes,
+      note: row.note,
+      resultVersion: row.result_version,
+    };
+  }
+
+  async isMutationIdInUse(mutationId: string): Promise<boolean> {
+    const row = await this.database
+      .prepare(
+        `SELECT (
+           EXISTS(SELECT 1 FROM audit_logs WHERE mutation_id = ?)
+           OR EXISTS(
+             SELECT 1 FROM attendance_records WHERE last_mutation_id = ?
+           )
+           OR EXISTS(
+             SELECT 1 FROM punch_events WHERE client_request_id = ?
+           )
+           OR EXISTS(
+             SELECT 1 FROM attendance_requests
+              WHERE creation_request_id = ? OR decision_request_id = ?
+           )
+         ) AS in_use`,
+      )
+      .bind(mutationId, mutationId, mutationId, mutationId, mutationId)
+      .first<{ in_use: number }>();
+    return row?.in_use === 1;
+  }
+
+  async createWorkSchedule(input: {
+    scheduleId: string;
+    userId: string;
+    workDate: string;
+    site: WorkSiteSummary;
+    scheduledStartAt: string;
+    scheduledEndAt: string;
+    scheduledBreakMinutes: number | null;
+    note: string | null;
+    actorUserId: string;
+    mutationId: string;
+    now: string;
+  }): Promise<boolean> {
+    const created: WorkScheduleSummary = {
+      id: input.scheduleId,
+      workDate: input.workDate,
+      scheduledStartAt: input.scheduledStartAt,
+      scheduledEndAt: input.scheduledEndAt,
+      scheduledBreakMinutes: input.scheduledBreakMinutes,
+      site: input.site,
+      note: input.note,
+      version: 1,
+    };
+    const auditId = crypto.randomUUID();
+    const insert = this.database
+      .prepare(
+        `INSERT INTO work_schedules
+           (id, user_id, site_id, work_date, scheduled_start_at,
+            scheduled_end_at, scheduled_break_minutes, note, version,
+            created_at, updated_at)
+         SELECT ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?
+          WHERE EXISTS (
+            SELECT 1 FROM users
+             WHERE id = ? AND role = 'employee' AND active = 1
+          )
+            AND EXISTS (
+              SELECT 1 FROM work_sites WHERE id = ? AND active = 1
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM work_schedules
+               WHERE user_id = ? AND work_date = ?
+            )
+            ${SCHEDULE_MUTATION_UNLOCKED}
+            AND NOT EXISTS (
+              SELECT 1 FROM audit_logs WHERE mutation_id = ?
+            )`,
+      )
+      .bind(
+        input.scheduleId,
+        input.userId,
+        input.site.id,
+        input.workDate,
+        input.scheduledStartAt,
+        input.scheduledEndAt,
+        input.scheduledBreakMinutes,
+        input.note,
+        input.now,
+        input.now,
+        input.userId,
+        input.site.id,
+        input.userId,
+        input.workDate,
+        input.userId,
+        input.workDate,
+        input.userId,
+        input.workDate,
+        input.mutationId,
+      );
+    const audit = this.database
+      .prepare(
+        `INSERT INTO audit_logs
+           (id, entity_type, entity_id, action, before_json, after_json,
+            reason, mutation_id, actor_user_id, created_at)
+         SELECT ?, 'work_schedule', ws.id, 'create', NULL, ?, NULL, ?, ?, ?
+           FROM work_schedules ws
+          WHERE ws.id = ? AND ws.user_id = ? AND ws.work_date = ?
+            AND NOT EXISTS (
+              SELECT 1 FROM audit_logs WHERE mutation_id = ?
+            )`,
+      )
+      .bind(
+        auditId,
+        JSON.stringify(scheduleAuditSnapshot(created, input.userId)),
+        input.mutationId,
+        input.actorUserId,
+        input.now,
+        input.scheduleId,
+        input.userId,
+        input.workDate,
+        input.mutationId,
+      );
+    const results = await this.database.batch([insert, audit]);
+    return (results[0]?.meta.changes ?? 0) === 1 && (results[1]?.meta.changes ?? 0) === 1;
+  }
+
+  async updateWorkSchedule(input: {
+    before: WorkScheduleSummary;
+    userId: string;
+    site: WorkSiteSummary;
+    scheduledStartAt: string;
+    scheduledEndAt: string;
+    scheduledBreakMinutes: number | null;
+    note: string | null;
+    actorUserId: string;
+    mutationId: string;
+    now: string;
+  }): Promise<boolean> {
+    const updated: WorkScheduleSummary = {
+      ...input.before,
+      site: input.site,
+      scheduledStartAt: input.scheduledStartAt,
+      scheduledEndAt: input.scheduledEndAt,
+      scheduledBreakMinutes: input.scheduledBreakMinutes,
+      note: input.note,
+      version: input.before.version + 1,
+    };
+    const auditId = crypto.randomUUID();
+    const audit = this.database
+      .prepare(
+        `INSERT INTO audit_logs
+           (id, entity_type, entity_id, action, before_json, after_json,
+            reason, mutation_id, actor_user_id, created_at)
+         SELECT ?, 'work_schedule', ws.id, 'update', ?, ?, NULL, ?, ?, ?
+           FROM work_schedules ws
+          WHERE ws.id = ? AND ws.user_id = ? AND ws.work_date = ?
+            AND ws.version = ?
+            AND EXISTS (
+              SELECT 1 FROM users
+               WHERE id = ? AND role = 'employee' AND active = 1
+            )
+            AND EXISTS (
+              SELECT 1 FROM work_sites WHERE id = ? AND active = 1
+            )
+            ${SCHEDULE_MUTATION_UNLOCKED}
+            AND NOT EXISTS (
+              SELECT 1 FROM audit_logs WHERE mutation_id = ?
+            )`,
+      )
+      .bind(
+        auditId,
+        JSON.stringify(scheduleAuditSnapshot(input.before, input.userId)),
+        JSON.stringify(scheduleAuditSnapshot(updated, input.userId)),
+        input.mutationId,
+        input.actorUserId,
+        input.now,
+        input.before.id,
+        input.userId,
+        input.before.workDate,
+        input.before.version,
+        input.userId,
+        input.site.id,
+        input.userId,
+        input.before.workDate,
+        input.userId,
+        input.before.workDate,
+        input.mutationId,
+      );
+    const update = this.database
+      .prepare(
+        `UPDATE work_schedules
+            SET site_id = ?, scheduled_start_at = ?, scheduled_end_at = ?,
+                scheduled_break_minutes = ?, note = ?, version = version + 1,
+                updated_at = ?
+          WHERE id = ? AND user_id = ? AND work_date = ? AND version = ?
+            AND EXISTS (
+              SELECT 1 FROM audit_logs
+               WHERE id = ? AND mutation_id = ?
+            )`,
+      )
+      .bind(
+        input.site.id,
+        input.scheduledStartAt,
+        input.scheduledEndAt,
+        input.scheduledBreakMinutes,
+        input.note,
+        input.now,
+        input.before.id,
+        input.userId,
+        input.before.workDate,
+        input.before.version,
+        auditId,
+        input.mutationId,
+      );
+    const results = await this.database.batch([audit, update]);
+    return (results[0]?.meta.changes ?? 0) === 1 && (results[1]?.meta.changes ?? 0) === 1;
+  }
+
+  async deleteWorkSchedule(input: {
+    before: WorkScheduleSummary;
+    userId: string;
+    actorUserId: string;
+    mutationId: string;
+    now: string;
+  }): Promise<boolean> {
+    const auditId = crypto.randomUUID();
+    const after = {
+      id: input.before.id,
+      userId: input.userId,
+      workDate: input.before.workDate,
+      version: input.before.version,
+      deleted: true,
+    };
+    const audit = this.database
+      .prepare(
+        `INSERT INTO audit_logs
+           (id, entity_type, entity_id, action, before_json, after_json,
+            reason, mutation_id, actor_user_id, created_at)
+         SELECT ?, 'work_schedule', ws.id, 'delete', ?, ?, NULL, ?, ?, ?
+           FROM work_schedules ws
+          WHERE ws.id = ? AND ws.user_id = ? AND ws.work_date = ?
+            AND ws.version = ?
+            AND EXISTS (
+              SELECT 1 FROM users
+               WHERE id = ? AND role = 'employee' AND active = 1
+            )
+            ${SCHEDULE_MUTATION_UNLOCKED}
+            AND NOT EXISTS (
+              SELECT 1 FROM audit_logs WHERE mutation_id = ?
+            )`,
+      )
+      .bind(
+        auditId,
+        JSON.stringify(scheduleAuditSnapshot(input.before, input.userId)),
+        JSON.stringify(after),
+        input.mutationId,
+        input.actorUserId,
+        input.now,
+        input.before.id,
+        input.userId,
+        input.before.workDate,
+        input.before.version,
+        input.userId,
+        input.userId,
+        input.before.workDate,
+        input.userId,
+        input.before.workDate,
+        input.mutationId,
+      );
+    const remove = this.database
+      .prepare(
+        `DELETE FROM work_schedules
+          WHERE id = ? AND user_id = ? AND work_date = ? AND version = ?
+            AND EXISTS (
+              SELECT 1 FROM audit_logs
+               WHERE id = ? AND mutation_id = ?
+            )`,
+      )
+      .bind(
+        input.before.id,
+        input.userId,
+        input.before.workDate,
+        input.before.version,
+        auditId,
+        input.mutationId,
+      );
+    const results = await this.database.batch([audit, remove]);
+    return (results[0]?.meta.changes ?? 0) === 1 && (results[1]?.meta.changes ?? 0) === 1;
   }
 
   async findRecordMutationById(
@@ -919,11 +1350,37 @@ export class D1AttendanceRepository {
     }));
   }
 
+  async findActiveEmployee(userId: string): Promise<EmployeeDirectoryItem | null> {
+    const row = await this.database
+      .prepare(
+        `SELECT id, employee_code, display_name, normalized_email
+           FROM users
+          WHERE id = ? AND role = 'employee' AND active = 1`,
+      )
+      .bind(userId)
+      .first<DirectoryRow>();
+    return row
+      ? {
+          id: row.id,
+          employeeCode: row.employee_code,
+          displayName: row.display_name,
+          email: row.normalized_email,
+        }
+      : null;
+  }
+
   async listSites(): Promise<Array<{ id: string; name: string }>> {
     const rows = await this.database
       .prepare("SELECT id, name FROM work_sites WHERE active = 1 ORDER BY name")
       .all<{ id: string; name: string }>();
     return rows.results;
+  }
+
+  async findActiveSite(siteId: string): Promise<WorkSiteSummary | null> {
+    return this.database
+      .prepare("SELECT id, name FROM work_sites WHERE id = ? AND active = 1")
+      .bind(siteId)
+      .first<WorkSiteSummary>();
   }
 
   async listDailyAttendance(
@@ -959,6 +1416,7 @@ export class D1AttendanceRepository {
           request,
           state,
           overdue,
+          scheduleMutation: getScheduleMutationState({ record, request }),
         } satisfies AdminAttendanceRow;
       }),
     );
@@ -1019,7 +1477,12 @@ export class D1AttendanceRepository {
         `SELECT al.id, al.entity_type, al.entity_id, al.action, al.before_json,
                 al.after_json, al.reason, al.actor_user_id,
                 actor.display_name AS actor_display_name,
-                COALESCE(ar.user_id, req.user_id) AS subject_user_id,
+                COALESCE(
+                  ar.user_id,
+                  req.user_id,
+                  json_extract(al.after_json, '$.userId'),
+                  json_extract(al.before_json, '$.userId')
+                ) AS subject_user_id,
                 subject.display_name AS subject_display_name, al.created_at
            FROM audit_logs al
            JOIN users actor ON actor.id = al.actor_user_id
@@ -1027,7 +1490,12 @@ export class D1AttendanceRepository {
              ON al.entity_type = 'attendance_record' AND ar.id = al.entity_id
            LEFT JOIN attendance_requests req
              ON al.entity_type = 'attendance_request' AND req.id = al.entity_id
-           LEFT JOIN users subject ON subject.id = COALESCE(ar.user_id, req.user_id)
+           LEFT JOIN users subject ON subject.id = COALESCE(
+             ar.user_id,
+             req.user_id,
+             json_extract(al.after_json, '$.userId'),
+             json_extract(al.before_json, '$.userId')
+           )
           ${where}
           ORDER BY al.created_at DESC LIMIT ?`,
       )

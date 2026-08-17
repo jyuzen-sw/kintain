@@ -1,4 +1,9 @@
-import { formatJstDateTime, formatJstTime, formatMinutes } from "../../lib/client/date";
+import {
+  formatJstDateTime,
+  formatJstTime,
+  formatMinutes,
+  formatWorkDate,
+} from "../../lib/client/date";
 import type { AuditLogSummary } from "../../lib/contracts/types";
 
 const categoryLabels: Readonly<Record<string, string>> = {
@@ -28,6 +33,11 @@ const fieldLabels: Readonly<Record<string, string>> = {
   reviewComment: "審査コメント",
   reviewerUserId: "審査担当者",
   reviewedAt: "審査日時",
+  workDate: "勤務日",
+  siteName: "現場",
+  scheduledStartAt: "開始予定",
+  scheduledEndAt: "終了予定",
+  scheduledBreakMinutes: "予定休憩",
 };
 
 export interface AuditDifference {
@@ -50,9 +60,18 @@ function auditValue(field: string, value: unknown): string {
   if (field === "status") {
     return requestStatusLabels[String(value)] ?? String(value);
   }
-  if (field === "actualBreakMinutes" && typeof value === "number") return formatMinutes(value);
+  if (
+    (field === "actualBreakMinutes" || field === "scheduledBreakMinutes") &&
+    typeof value === "number"
+  ) {
+    return formatMinutes(value);
+  }
+  if (field === "workDate" && typeof value === "string") return formatWorkDate(value);
   if (field.endsWith("At") && typeof value === "string") {
-    return field === "clockInAt" || field === "clockOutAt"
+    return field === "clockInAt" ||
+      field === "clockOutAt" ||
+      field === "scheduledStartAt" ||
+      field === "scheduledEndAt"
       ? formatJstTime(value)
       : formatJstDateTime(value);
   }

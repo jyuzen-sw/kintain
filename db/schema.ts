@@ -80,6 +80,7 @@ export const workSchedules = sqliteTable(
     scheduledEndAt: text("scheduled_end_at").notNull(),
     scheduledBreakMinutes: integer("scheduled_break_minutes"),
     note: text("note"),
+    version: integer("version").notNull().default(1),
     createdAt: text("created_at").notNull().default(utcNow),
     updatedAt: text("updated_at").notNull().default(utcNow),
   },
@@ -94,6 +95,7 @@ export const workSchedules = sqliteTable(
       "work_schedules_break_minutes_check",
       sql`${table.scheduledBreakMinutes} IS NULL OR ${table.scheduledBreakMinutes} >= 0`,
     ),
+    check("work_schedules_version_check", sql`${table.version} >= 1`),
   ],
 );
 

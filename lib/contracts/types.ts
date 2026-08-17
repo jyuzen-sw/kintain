@@ -46,6 +46,12 @@ export interface WorkScheduleSummary {
   scheduledBreakMinutes: number | null;
   site: WorkSiteSummary;
   note: string | null;
+  version: number;
+}
+
+export interface ScheduleMutationState {
+  allowed: boolean;
+  reason: string | null;
 }
 
 export interface PunchLocationSummary {
@@ -146,4 +152,5 @@ export interface AdminAttendanceRow {
   request: AttendanceRequestSummary | null;
   state: AttendanceState;
   overdue: boolean;
+  scheduleMutation: ScheduleMutationState;
 }

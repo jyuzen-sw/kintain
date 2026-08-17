@@ -4,6 +4,7 @@ import {
   employeeAccounts,
   loginAsAdmin,
   loginAsEmployee,
+  shiftWorkDate,
 } from "./helpers";
 
 test("主要画面は指定ビューポートで横スクロールせず表示できる", async ({ context, page }, testInfo) => {
@@ -35,6 +36,19 @@ test("主要画面は指定ビューポートで横スクロールせず表示�
   await expect(todayResults).toHaveAttribute("aria-busy", "false");
   await expect(todayResults.locator(".admin-results-panel")).toContainText("〇〇さん");
   await captureVisual(page, testInfo, "admin-today");
+
+  const dateInput = page.getByLabel("対象日");
+  const futureDate = shiftWorkDate(await dateInput.inputValue(), 1);
+  await dateInput.fill(futureDate);
+  await expect(todayResults).toHaveAttribute("aria-busy", "false");
+  const employeeResult = page.locator(".admin-table tr:visible, .admin-result-card:visible").filter({
+    hasText: "〇〇さん",
+  }).filter({ has: page.getByRole("button", { name: "予定を設定" }) }).first();
+  await employeeResult.getByRole("button", { name: "予定を設定" }).click();
+  const scheduleDialog = page.getByRole("dialog");
+  await expect(scheduleDialog).toBeVisible();
+  await captureVisual(page, testInfo, "admin-schedule-dialog");
+  await scheduleDialog.locator(".admin-modal__close").click();
 
   await page.goto("/admin/sites");
   await expect(page.getByRole("heading", { name: "現場別の勤怠" })).toBeVisible();

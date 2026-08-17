@@ -19,6 +19,12 @@ export const adminAccount = {
   password: "AdminDemo!2026",
 } as const;
 
+export function shiftWorkDate(workDate: string, offsetDays: number): string {
+  const [year, month, day] = workDate.split("-").map(Number);
+  const shifted = new Date(Date.UTC(year, month - 1, day + offsetDays));
+  return shifted.toISOString().slice(0, 10);
+}
+
 export async function waitForClientReady(page: Page) {
   await expect
     .poll(() =>
