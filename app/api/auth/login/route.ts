@@ -22,12 +22,14 @@ export async function POST(request: Request): Promise<Response> {
     assertTrustedMutation(request);
     const input = parseInput(loginSchema, await readJsonBody(request));
     const database = getDatabase();
+    const runtimeEnv = getRuntimeEnv();
     await ensurePublicDemoBootstrap({
       database,
-      environment: getRuntimeEnv(),
+      environment: runtimeEnv,
     });
     const result = await loginWithPassword({
       database,
+      environment: runtimeEnv,
       request,
       email: input.email,
       password: input.password,
