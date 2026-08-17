@@ -3,6 +3,7 @@
 - Status: Accepted
 - Date: 2026-08-10
 - Scope: Phase 1の認証・認可設計、Phase 2のSites公開境界
+- Amended by: [ADR 0002](./0002-sites-public-demo-password-cost.md)
 
 ## Context
 
@@ -144,19 +145,4 @@ D1 readを減らせますが、logout・強制失効・user無効化・role変�
 - D1障害時はloginと認証済みAPIの両方が利用できない。
 - 意図的に公開するdemo passwordであっても、通常環境のcredentialと混在させない運用が必要である。
 
-## Phase 2 verification
-
-Phase 2は実URLで次を確認します。
-
-- PBKDF2成功・失敗時のCPU時間とlogin latency
-- 連続失敗時のaccount/IP rate limit
-- production cookie属性
-- CSRFなし・cross-origin mutationの拒否
-- employeeからadmin APIへの拒否
-- logout後のsession無効化
-- reload・別Worker requestでのsession継続
-- D1永続化と期限切れsessionの扱い
-- Sites audienceを拡大してもアプリloginが維持されること
-- demo credential以外の実credentialが存在しないこと
-
-CPU制限を理由に反復回数や認証方式をその場で弱めません。変更が必要ならsecurity reviewを伴う別ADRと実装Phaseへ戻します。
+Sites実行環境のPBKDF2上限に対する公開デモ限定の例外は、判断対象を分離して[ADR 0002](./0002-sites-public-demo-password-cost.md)に記録します。
