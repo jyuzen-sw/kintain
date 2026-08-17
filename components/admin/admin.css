@@ -670,8 +670,8 @@
   .admin-header { min-height: 64px; }
   .admin-header__top { min-height: 63px; padding-inline: 32px; }
   .admin-nav { position: absolute; inset: 0; border-top: 0; pointer-events: none; }
-  .admin-nav__inner { min-height: 63px; justify-content: center; padding-inline: 220px 280px; pointer-events: auto; }
-  .admin-nav a { min-height: 63px; border-radius: 0; }
+  .admin-nav__inner { min-height: 63px; justify-content: center; padding-inline: 220px 280px; }
+  .admin-nav a { min-height: 63px; border-radius: 0; pointer-events: auto; }
   .admin-global-notice,
   .admin-content { padding-inline: 32px; }
   .admin-content { padding-block: 36px 64px; }

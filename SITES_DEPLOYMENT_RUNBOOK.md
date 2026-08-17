@@ -224,6 +224,7 @@ deploy URLはpreviewではなくproductionです。試行deployを繰り返さ�
 - 打刻済み日の非勤務申請承認が競合として拒否される。
 - admin resetを実行し、初期架空シナリオへ戻る。
 - reset後もadmin sessionとuser/siteが維持され、reset監査が残る。
+- デスクトップヘッダーの管理者メニューをpointerとkeyboardで開き、logout後にsessionを再利用できない。
 
 ### 9.4 永続化と実D1
 

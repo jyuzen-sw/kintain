@@ -250,7 +250,7 @@ Phase 2では実URLをinstallし、standalone起動、safe area、offline案内�
 
 1. 未認証で従業員・管理者APIを利用できない。
 2. employee accountでloginし、管理者APIは403になる。
-3. admin accountでloginし、管理画面と監査を表示できる。
+3. admin accountでloginし、管理画面と監査を表示でき、ヘッダーをクリックまたはキーボードで開いてlogoutできる。
 4. 通常モードのGPS許可・拒否・timeoutはローカルの隔離D1と合成座標だけで確認する。実URLの公開デモでは端末GPSを要求せず、直接送った座標も破棄することを確認する。
 5. 本人修正が保存され、元の打刻イベントを保持したまま監査ログが増える。
 6. 申請作成・取消・承認・却下と、打刻済み日の承認競合を確認する。

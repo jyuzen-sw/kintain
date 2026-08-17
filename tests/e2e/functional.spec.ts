@@ -519,6 +519,32 @@ test("管理者は日次一覧から勤務予定を登録・修正・監査確�
   ]));
 });
 
+test("管理者はデスクトップヘッダーをクリックまたはキーボードで開き、ログアウトできる", async ({ context, page }) => {
+  await loginAsAdmin(page);
+  const adminMenu = page.getByLabel("管理者メニューを開く");
+  await adminMenu.focus();
+  await adminMenu.press("Enter");
+  await expect(page.getByRole("button", { name: "ログアウト" })).toBeVisible();
+  await adminMenu.press("Enter");
+  await expect(page.getByRole("button", { name: "ログアウト" })).toBeHidden();
+
+  await adminMenu.click();
+  const logoutButton = page.getByRole("button", { name: "ログアウト" });
+  await expect(logoutButton).toBeVisible();
+  const logoutResponsePromise = page.waitForResponse(
+    (response) => response.url().endsWith("/api/auth/logout")
+      && response.request().method() === "POST",
+  );
+  await logoutButton.click();
+  expect((await logoutResponsePromise).status()).toBe(200);
+  await page.waitForURL(/\/login(?:\?.*)?$/u);
+  const session = await page.request.get("/api/auth/session");
+  expect(session.status()).toBe(401);
+  const cookieNames = (await context.cookies()).map((cookie) => cookie.name);
+  expect(cookieNames).not.toContain("kintain_session");
+  expect(cookieNames).not.toContain("kintain_csrf");
+});
+
 test("管理者は実認証後、当日・現場・申請・個人実績・監査ログへ移動できる", async ({ page }) => {
   await loginAsAdmin(page);
   await expect(page.getByRole("heading", { name: "当日の勤怠" })).toBeVisible();
