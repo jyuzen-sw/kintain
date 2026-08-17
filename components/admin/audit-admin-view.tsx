@@ -11,14 +11,25 @@ import { ActionButton, EmptyState, InlineNotice, LoadingPanel } from "../shared/
 import { AdminFilterBar, AdminPageHeader, ResultSummary } from "./admin-shared";
 import { buildAuditDifferences } from "./audit-utils";
 
-type AuditEntityFilter = "all" | "attendance_record" | "attendance_request";
+type AuditEntityFilter =
+  | "all"
+  | "attendance_record"
+  | "attendance_request"
+  | "work_schedule";
 
 const actionLabels: Readonly<Record<string, string>> = {
   create: "作成",
-  update: "実績修正",
+  update: "修正",
   approve: "承認",
   reject: "却下",
   withdraw: "取消",
+  delete: "削除",
+};
+
+const entityLabels: Readonly<Record<string, string>> = {
+  attendance_record: "勤怠実績",
+  attendance_request: "申請",
+  work_schedule: "勤務予定",
 };
 
 export function AuditAdminView() {
@@ -26,6 +37,7 @@ export function AuditAdminView() {
   const rawEntityType = searchParams.get("entityType");
   const queryEntityType = rawEntityType === "attendance_record"
     || rawEntityType === "attendance_request"
+    || rawEntityType === "work_schedule"
     ? rawEntityType
     : undefined;
   const entityId = searchParams.get("entityId")?.trim() ?? "";
@@ -79,7 +91,7 @@ export function AuditAdminView() {
   return (
     <div className="admin-page">
       <AdminPageHeader
-        description="実績修正と申請処理について、変更者・理由・変更前後を確認します。"
+        description="勤務予定、実績修正、申請処理について、変更者と変更前後を確認します。"
         eyebrow="追跡と説明責任"
         title="監査ログ"
       >
@@ -90,9 +102,10 @@ export function AuditAdminView() {
         <label className="admin-field admin-field--wide">
           <span>対象</span>
           <select disabled={Boolean(entityId)} onChange={(event) => setEntityType(event.target.value as AuditEntityFilter)} value={entityType}>
-            <option value="all">実績修正と申請処理</option>
+            <option value="all">すべての変更</option>
             <option value="attendance_record">実績修正</option>
             <option value="attendance_request">申請処理</option>
+            <option value="work_schedule">勤務予定</option>
           </select>
         </label>
         <label className="admin-field">
@@ -105,7 +118,7 @@ export function AuditAdminView() {
         </label>
         {entityId ? (
           <div className="admin-active-filter">
-            <span>{subjectName ? `${subjectName}の実績` : "対象実績"}に絞り込み中</span>
+            <span>{subjectName ? `${subjectName}の変更` : "対象の変更"}に絞り込み中</span>
             <Link href="/admin/audit">解除</Link>
           </div>
         ) : null}
@@ -141,14 +154,14 @@ function AuditEntry({ log }: { log: AuditLogSummary }) {
     <article className="admin-audit-entry">
       <header className="admin-audit-entry__heading">
         <div>
-          <p>{log.entityType === "attendance_request" ? "申請" : "勤怠実績"}・{actionLabels[log.action] ?? log.action}</p>
+          <p>{entityLabels[log.entityType] ?? log.entityType}・{actionLabels[log.action] ?? log.action}</p>
           <h2>{log.subjectDisplayName ?? "対象者不明"}</h2>
         </div>
         <time dateTime={log.createdAt}>{formatJstDateTime(log.createdAt)}</time>
       </header>
       <dl className="admin-audit-meta">
         <div><dt>変更者</dt><dd>{log.actorDisplayName}</dd></div>
-        <div><dt>理由</dt><dd>{log.reason || "理由なし"}</dd></div>
+        <div><dt>理由</dt><dd>{log.reason || "—"}</dd></div>
       </dl>
       {differences.length > 0 ? (
         <div className="admin-audit-diff">

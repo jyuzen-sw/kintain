@@ -50,4 +50,30 @@ describe("監査差分", () => {
       { field: "勤怠区分", before: "通常勤務", after: "病欠" },
     ]);
   });
+
+  it("勤務予定の現場・時刻・休憩を利用者向けに示す", () => {
+    expect(
+      buildAuditDifferences(
+        auditLog(
+          {
+            siteName: "A作業場",
+            scheduledStartAt: "2026-08-17T00:00:00.000Z",
+            scheduledEndAt: "2026-08-17T09:00:00.000Z",
+            scheduledBreakMinutes: 60,
+          },
+          {
+            siteName: "B作業場",
+            scheduledStartAt: "2026-08-17T00:30:00.000Z",
+            scheduledEndAt: "2026-08-17T08:30:00.000Z",
+            scheduledBreakMinutes: 45,
+          },
+        ),
+      ),
+    ).toEqual([
+      { field: "現場", before: "A作業場", after: "B作業場" },
+      { field: "開始予定", before: "09:00", after: "09:30" },
+      { field: "終了予定", before: "18:00", after: "17:30" },
+      { field: "予定休憩", before: "1時間", after: "45分" },
+    ]);
+  });
 });

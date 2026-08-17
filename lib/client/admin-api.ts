@@ -7,6 +7,7 @@ import type {
   EmployeeDirectoryItem,
   MonthAttendanceDay,
   WorkSiteSummary,
+  WorkScheduleSummary,
 } from "../contracts/types";
 import { ApiError, redirectExpiredSession } from "./api";
 
@@ -30,7 +31,7 @@ type AdminRequestInit = Omit<RequestInit, "body"> & {
 
 export interface AdminAuditFilters {
   limit?: number;
-  entityType?: "attendance_record" | "attendance_request";
+  entityType?: "attendance_record" | "attendance_request" | "work_schedule";
   entityId?: string;
 }
 
@@ -70,6 +71,23 @@ export interface AdminAttendanceUpdateInput {
 export interface AdminRequestReviewInput {
   decision: "approve" | "reject";
   reviewComment: string | null;
+  version: number;
+  clientRequestId: string;
+}
+
+export interface AdminWorkScheduleSaveInput {
+  scheduleId: string | null;
+  version: number | null;
+  siteId: string;
+  scheduledStartAt: string;
+  scheduledEndAt: string;
+  scheduledBreakMinutes: number | null;
+  note: string | null;
+  clientRequestId: string;
+}
+
+export interface AdminWorkScheduleDeleteInput {
+  scheduleId: string;
   version: number;
   clientRequestId: string;
 }
@@ -214,6 +232,28 @@ export function updateAdminAttendance(
   return requestAdminData<AttendanceRecordSummary>(
     `/api/admin/attendance/${encodeURIComponent(recordId)}`,
     { method: "PATCH", body: input, csrf: true },
+  );
+}
+
+export function saveAdminWorkSchedule(
+  userId: string,
+  workDate: string,
+  input: AdminWorkScheduleSaveInput,
+): Promise<WorkScheduleSummary> {
+  return requestAdminData<WorkScheduleSummary>(
+    `/api/admin/users/${encodeURIComponent(userId)}/schedules/${encodeURIComponent(workDate)}`,
+    { method: "PUT", body: input, csrf: true },
+  );
+}
+
+export function deleteAdminWorkSchedule(
+  userId: string,
+  workDate: string,
+  input: AdminWorkScheduleDeleteInput,
+): Promise<void> {
+  return requestAdminData<void>(
+    `/api/admin/users/${encodeURIComponent(userId)}/schedules/${encodeURIComponent(workDate)}`,
+    { method: "DELETE", body: input, csrf: true },
   );
 }
 

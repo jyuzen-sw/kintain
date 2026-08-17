@@ -7,6 +7,7 @@ import {
   getAdminToday,
   type AdminTodayData,
 } from "../../lib/client/admin-api";
+import type { AdminAttendanceRow } from "../../lib/contracts/types";
 import { ActionButton, EmptyState, InlineNotice, LoadingPanel } from "../shared/ui";
 import {
   AdminFilterBar,
@@ -14,13 +15,24 @@ import {
   AttendanceResults,
   ResultSummary,
 } from "./admin-shared";
+import {
+  WorkScheduleEditor,
+  type WorkScheduleSavedAction,
+} from "./work-schedule-editor";
+
+interface SuccessNotice {
+  title: string;
+  message: string;
+}
 
 export function TodayAdminView() {
   const [workDate, setWorkDate] = useState(currentJstWorkDate);
   const [data, setData] = useState<AdminTodayData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
+  const [operationError, setOperationError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<SuccessNotice | null>(null);
+  const [editingRow, setEditingRow] = useState<AdminAttendanceRow | null>(null);
   const beginRequest = useLatestRequestGate();
 
   const load = useCallback(async (date: string) => {
@@ -50,8 +62,26 @@ export function TodayAdminView() {
   useEffect(() => {
     if (window.sessionStorage.getItem("kintain_demo_reset_succeeded") !== "true") return;
     window.sessionStorage.removeItem("kintain_demo_reset_succeeded");
-    setSuccess("デモデータを初期状態へ戻しました。");
+    setSuccess({
+      title: "初期状態へ戻しました",
+      message: "デモデータを初期状態へ戻しました。",
+    });
   }, []);
+
+  const handleScheduleSaved = (
+    action: WorkScheduleSavedAction,
+    row: AdminAttendanceRow,
+    date: string,
+  ) => {
+    const actionLabel = action === "created" ? "登録" : action === "updated" ? "更新" : "削除";
+    setEditingRow(null);
+    setOperationError(null);
+    setSuccess({
+      title: `勤務予定を${actionLabel}しました`,
+      message: `${row.user.displayName}の${formatWorkDate(date)}の勤務予定を${actionLabel}し、監査ログへ記録しました。`,
+    });
+    void load(date);
+  };
 
   return (
     <div className="admin-page">
@@ -63,7 +93,10 @@ export function TodayAdminView() {
         <ActionButton
           icon="refresh"
           loading={loading && data !== null}
-          onClick={() => void load(workDate)}
+          onClick={() => {
+            setOperationError(null);
+            void load(workDate);
+          }}
           variant="secondary"
         >
           更新する
@@ -74,7 +107,12 @@ export function TodayAdminView() {
         <label className="admin-field">
           <span>対象日</span>
           <input
-            onChange={(event) => setWorkDate(event.target.value)}
+            onChange={(event) => {
+              setEditingRow(null);
+              setOperationError(null);
+              setSuccess(null);
+              setWorkDate(event.target.value);
+            }}
             type="date"
             value={workDate}
           />
@@ -95,7 +133,12 @@ export function TodayAdminView() {
           {error}
         </InlineNotice>
       ) : null}
-      {success ? <InlineNotice title="初期状態へ戻しました" tone="success">{success}</InlineNotice> : null}
+      {operationError ? (
+        <InlineNotice role="alert" title="勤務予定を変更できません" tone="danger">
+          {operationError}
+        </InlineNotice>
+      ) : null}
+      {success ? <InlineNotice title={success.title} tone="success">{success.message}</InlineNotice> : null}
 
       {loading && !data ? (
         <LoadingPanel label="当日の勤怠を読み込んでいます" />
@@ -110,9 +153,25 @@ export function TodayAdminView() {
               title="勤怠データがありません"
             />
           ) : (
-            <AttendanceResults rows={data.rows} />
+            <AttendanceResults onEditSchedule={setEditingRow} rows={data.rows} />
           )}
         </section>
+      ) : null}
+
+      {editingRow && data ? (
+        <WorkScheduleEditor
+          onClose={() => setEditingRow(null)}
+          onConflict={(message) => {
+            setEditingRow(null);
+            setSuccess(null);
+            setOperationError(message);
+            void load(data.workDate);
+          }}
+          onSaved={(action) => handleScheduleSaved(action, editingRow, data.workDate)}
+          row={editingRow}
+          sites={data.sites}
+          workDate={data.workDate}
+        />
       ) : null}
     </div>
   );

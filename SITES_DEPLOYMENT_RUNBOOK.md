@@ -22,7 +22,7 @@ OpenAI公式では、Sitesの公開処理は「review可能なversionを保存�
 - commitが引き継ぎ記録と一致しない、またはworktreeがdirty
 - `npm ci`、lint、typecheck、unit、integration、E2E、buildのいずれかが失敗
 - SitesがVinext/Worker artifactまたはD1 bindingを受理しない
-- `0001_initial.sql`、`0002_request_idempotency.sql`、`0003_demo_seed.sql` の同梱順、deploy結果、または実URLでのschema利用を確認できない
+- `0001_initial.sql`、`0002_request_idempotency.sql`、`0003_demo_seed.sql`、`0004_work_schedule_management.sql` の同梱順、deploy結果、または実URLでのschema利用を確認できない
 - `0003`、公開デモgate下の空D1限定bootstrap、または厳密に識別した同梱seedの一度限りの整合のいずれでも、架空seedを安全に投入・確認できない
 - 実在人物のメール、勤怠、位置情報、credentialが混入
 - environment valueをprompt、添付、source、logへ転記する必要が生じる
@@ -75,7 +75,7 @@ Sitesへの依頼内容には、次の不変条件を含めます。
 - Vinext starter互換のWorker ESMを使う。
 - D1の論理bindingは `DB` から変えない。
 - R2は使わない。
-- schemaは `db/schema.ts`、migrationは `drizzle/0001_initial.sql` → `drizzle/0002_request_idempotency.sql` → `drizzle/0003_demo_seed.sql` を正とする。`0003` は空D1専用の一度限りの架空データmigrationであり、schemaは変更しない。
+- schemaは `db/schema.ts`、migrationは `drizzle/0001_initial.sql` → `drizzle/0002_request_idempotency.sql` → `drizzle/0003_demo_seed.sql` → `drizzle/0004_work_schedule_management.sql` を正とする。`0003` は空D1専用の一度限りの架空データmigration、`0004`は勤務予定versionの前進migrationである。
 - 架空データ以外を投入しない。
 - Sites accessとアプリ内login/role認可を別々に維持する。
 - 既存のテストやsecurity checkを外さない。
@@ -92,13 +92,13 @@ OpenAI公式showcaseもVinext、Worker互換ESM、D1 `DB`、R2なし、Drizzle s
 
 公式ドキュメントでは、ローカルstarterは `project_id` なしで開始でき、Sitesがhosted projectをprovisionした後にproject linkageを追加します。また、永続的なstructured dataにはD1を使います。[OpenAI Sites documentation](https://learn.chatgpt.com/docs/sites)
 
-## 4. migration `0001` → `0002` → `0003` を適用する
+## 4. migration `0001` → `0002` → `0003` → `0004` を適用する
 
 1. 対象が新規の空D1であることを確認する。
-2. `drizzle/0001_initial.sql`、`drizzle/0002_request_idempotency.sql`、`drizzle/0003_demo_seed.sql` を開き、9テーブル、前進処理、index、架空seedだけの `INSERT` を再確認する。
-3. package内の3ファイルとdeploy成功を確認する。Sites connectorが物理D1名、migration履歴、SQL照会を公開しない場合は、その観測制約を結果へ明記し、実URLのAPIでschemaとデータを確認する。
-4. 確認済みの経路で `0001_initial.sql`、`0002_request_idempotency.sql`、`0003_demo_seed.sql` をこの順で各一度だけ同梱・deployする。
-5. 3つのmigration名、開始・終了時刻、deploy結果を記録する。物理resource名とmigration履歴がconnectorから取得不能なら、取得不能と代替検証結果を記録し、推測値を書かない。
+2. `drizzle/0001_initial.sql`、`drizzle/0002_request_idempotency.sql`、`drizzle/0003_demo_seed.sql`、`drizzle/0004_work_schedule_management.sql` を開き、9テーブル、前進処理、index、架空seedだけの `INSERT`、勤務予定version追加を再確認する。
+3. package内の4ファイルとdeploy成功を確認する。Sites connectorが物理D1名、migration履歴、SQL照会を公開しない場合は、その観測制約を結果へ明記し、実URLのAPIでschemaとデータを確認する。
+4. 確認済みの経路で `0001_initial.sql`、`0002_request_idempotency.sql`、`0003_demo_seed.sql`、`0004_work_schedule_management.sql` をこの順で各一度だけ同梱・deployする。
+5. 4つのmigration名、開始・終了時刻、deploy結果を記録する。物理resource名とmigration履歴がconnectorから取得不能なら、取得不能と代替検証結果を記録し、推測値を書かない。
 6. 次のテーブルが存在することを確認する。
 
 ```text
@@ -115,8 +115,9 @@ login_rate_limits
 
 7. `users(normalized_email)`、予定・実績の日次一意制約、打刻冪等key、申請の部分一意制約、外部キーが存在することを確認する。
 8. `attendance_requests.creation_request_id` が `NOT NULL UNIQUE`、`audit_logs.mutation_id` がnullable uniqueであることを確認する。
+9. `work_schedules.version` が `NOT NULL DEFAULT 1` かつ1以上の制約を持つことを確認する。
 
-`0002`は既存の`0001`適用済みD1を前進できるよう申請テーブルを再構築します。`0003`はPhase 2で固定した架空データを空D1へ一度だけ投入する前進データmigrationです。fresh D1では3本すべてを順に同梱し、既存データ入りD1へ`0003`を適用しません。connectorが履歴を公開しないこと自体は観測制約として記録し、deploy失敗、schema差分、部分適用の兆候、または既存データがある場合はdeployを止めます。saved versionのrollbackだけではD1 schema/dataは戻らないため、先にbackup/export手段と復旧責任者を確認します。
+`0002`は既存の`0001`適用済みD1を前進できるよう申請テーブルを再構築します。`0003`はPhase 2で固定した架空データを空D1へ一度だけ投入する前進データmigration、`0004`は既存予定を保持したままversionを追加するschema migrationです。fresh D1では4本すべてを順に同梱します。既に`0003`まで適用済みのD1にはpendingの`0004`だけを適用し、既存データ入りD1へ`0003`を再適用しません。connectorが履歴を公開しないこと自体は観測制約として記録し、deploy失敗、schema差分、部分適用の兆候がある場合はdeployを止めます。saved versionのrollbackだけではD1 schema/dataは戻らないため、先にbackup/export手段と復旧責任者を確認します。
 
 ## 5. 架空seedを実D1へ投入する
 
@@ -127,8 +128,8 @@ login_rate_limits
 3. `0003_demo_seed.sql` が7つの `INSERT` だけで構成され、実在ドメイン、実名、実勤怠、実GPSを含まないことを確認する。
 4. 6架空user、2架空site、当日・前日の予定、勤務中・退勤済み・出勤前・病欠承認済み、合成GPS状態、pending・approved・rejectedの申請例、監査例を確認する。
 5. 必要に応じて `npm run --silent db:seed:render` を一時出力し、構造と架空シナリオが一致することを確認する。saltと生成日時が毎回変わるため、byte一致は要求しない。
-6. package内に `0001_initial.sql`、`0002_request_idempotency.sql`、`0003_demo_seed.sql` がこの番号順で存在することを確認する。
-7. Sitesのmigration-aware経路で3本を同梱・deployする。connectorから履歴を照会できない場合は、deploy結果と実URLのschema利用を記録する。
+6. package内に `0001_initial.sql`、`0002_request_idempotency.sql`、`0003_demo_seed.sql`、`0004_work_schedule_management.sql` がこの番号順で存在することを確認する。
+7. Sitesのmigration-aware経路で4本を同梱・deployする。connectorから履歴を照会できない場合は、deploy結果と実URLのschema利用を記録する。
 8. user、site、schedule、record、punch、request、auditの件数と参照整合性をアプリ挙動または承認済みD1照会で確認する。
 9. 架空accountで通常のlogin APIを通過できることを確認する。schemaは利用できても全架空accountが401となる場合は、workerdのPBKDF2 host上限も確認し、3つの公開デモgate下で動く `ensurePublicDemoBootstrap()` を使う互換性versionへ切り替える。8つのアプリ表（`login_rate_limits`を除く）が合計0件なら既定user・siteと当日シナリオを1つのD1 batchで作成する。`0003` のデータが存在する場合は、全件数と既知IDが固定seedと完全一致するときだけ、100,000反復の公開資格情報と実行日シナリオへ一度だけ整合する。旧600,000反復hashで整合済みの場合も、全6件のdirectory値・旧hash・初期化監査・sessionなしが完全一致するときだけ、勤怠をresetせずhashだけをatomic更新する。各処理は一意markerを使い、並行要求の競合batchは全体rollbackして、完成済み既定状態だけをno-opとして認める。任意の既存userは変更せず、userなしの部分状態は503で停止する。
 10. 初回login後に管理者の `POST /api/admin/reset` を実行し、当日シナリオへ戻ることと再実行性を確認する。
@@ -214,6 +215,9 @@ deploy URLはpreviewではなくproductionです。試行deployを繰り返さ�
 ### 9.3 管理者workflow
 
 - 当日、現場別、個人月次、申請、監査の全画面を表示する。
+- 当日一覧から打刻前の勤務予定を登録・更新・削除し、reload後も値が残り、監査ログへ変更前後が表示される。
+- 打刻または入力済み実績、申請中・承認済み申請がある日の予定変更が理由付きで無効になる。
+- 同じ勤務予定payloadとUUIDの再送が重複せず、古いversionと同じUUIDの別payloadが409になる。
 - 実績を修正し、変更前後・actor・理由が監査される。
 - pending申請を承認し、非勤務区分と監査が反映される。
 - 別のpending申請を却下し、理由と監査が反映される。
@@ -227,7 +231,7 @@ deploy URLはpreviewではなくproductionです。試行deployを繰り返さ�
 - 別browser sessionから同じ値を確認できる。
 - application再deploy後もD1 dataが意図せず初期化されない。
 - D1 queryで重複打刻、重複有効申請、孤立外部キー、GPSを複製した監査JSONがない。
-- 同一payloadの打刻・修正・申請操作を同じUUIDで再送すると同じ結果、異なるpayloadへの流用は409になる。
+- 同一payloadの打刻・修正・申請・勤務予定操作を同じUUIDで再送すると同じ結果、異なるpayloadへの流用は409になる。
 - HTTP resetのD1 `batch()` が実環境で完了し、実行時間とエラーを記録する。
 
 ### 9.5 PWA

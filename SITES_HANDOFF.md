@@ -33,7 +33,7 @@
 - R2: 未使用
 - Sites manifest: `.openai/hosting.json`
 - Drizzle schema: `db/schema.ts`
-- migration: `drizzle/0001_initial.sql` → `drizzle/0002_request_idempotency.sql` → `drizzle/0003_demo_seed.sql`（`0003`はPhase 2互換性commitで追加した空D1用の架空データmigration）
+- migration: `drizzle/0001_initial.sql` → `drizzle/0002_request_idempotency.sql` → `drizzle/0003_demo_seed.sql` → `drizzle/0004_work_schedule_management.sql`（`0003`は空D1用の架空データmigration、`0004`は勤務予定versionの前進migration）
 - D1取得箇所: `lib/server/db.ts` に集約
 
 OpenAI公式showcaseも、SitesのVinext starter、Worker互換ESM、D1 `DB`、R2なし、Drizzle schema/migration、binding helperを示しています。[OpenAI Sites showcase: Sparkboard](https://learn.chatgpt.com/showcase/idea-intake)
@@ -60,6 +60,8 @@ OpenAI公式showcaseも、SitesのVinext starter、Worker互換ESM、D1 `DB`、R
 
 上表はPhase 1時点の履歴です。Phase 2では実D1 bootstrapのため `0003_demo_seed.sql` とローカル互換性修正を独立commitへ追加しました。さらに初回実deployでschemaは利用できる一方、正しい架空資格情報が401となりました。原因はSites本番workerdがPBKDF2を100,000反復までに制限し、Phase 1の600,000反復hashを `verifyPassword()` が例外から不一致へ変換していたことです。公開デモgate下の空D1初期化、同梱seedの厳密整合、既知の旧hashだけの一度限りの互換更新を分離し、全検査と実URL再検証を `SITES_DEPLOYMENT_RESULT.md` に記録します。
 
+勤務予定管理追加時の再検証では、lint、typecheck、production build、`0004`を含むローカルresetが成功し、unit 102件、D1 integration 25件、Playwright E2E 16件（functional 12件＋visual 4 project）が成功しています。勤務予定ダイアログは390×844、430×932、768×1024、1440×900の4 viewportで横overflowがないことを確認しています。
+
 Phase 2の再現順:
 
 ```bash
@@ -82,13 +84,14 @@ build後のローカルpreviewは `npm run start` です。
 
 binding名は `DB` から変更しません。実resource IDはリポジトリへ書きません。
 
-適用順は次の3本です。順序を入れ替えたり、途中を省略したりしません。
+適用順は次の4本です。順序を入れ替えたり、途中を省略したりしません。
 
 1. `drizzle/0001_initial.sql`
 2. `drizzle/0002_request_idempotency.sql`
 3. `drizzle/0003_demo_seed.sql`
+4. `drizzle/0004_work_schedule_management.sql`
 
-`0001`は9テーブルの基礎schema、`0002`は既存の`0001`適用済みD1を前進させるmigrationです。`attendance_requests.creation_request_id`を必須・一意として追加し、`audit_logs.mutation_id`をnullable一意として追加します。`0003`はschemaを変えず、レビュー済みの架空データを空D1へ一度だけ投入します。fresh D1には必ず3本を順に適用し、既存データ入りD1へ`0003`を適用しません。
+`0001`は9テーブルの基礎schema、`0002`は既存の`0001`適用済みD1を前進させるmigrationです。`attendance_requests.creation_request_id`を必須・一意として追加し、`audit_logs.mutation_id`をnullable一意として追加します。`0003`はschemaを変えず、レビュー済みの架空データを空D1へ一度だけ投入します。`0004`は`work_schedules.version`を追加し、管理者の予定更新・削除で楽観ロックを行えるようにします。fresh D1には4本を順に適用し、`0003`適用済みの既存D1にはpendingの`0004`だけを適用します。
 
 migrationは以下の9テーブル、外部キー、CHECK、検索index、冪等性receipt・楽観lock向け制約を作成します。
 
@@ -96,11 +99,11 @@ migrationは以下の9テーブル、外部キー、CHECK、検索index、冪等
 |---|---|
 | `users` | 架空ユーザー、role、password hash |
 | `work_sites` | 架空現場 |
-| `work_schedules` | JST勤務日ごとの予定 |
+| `work_schedules` | JST勤務日ごとの予定と楽観ロック用version |
 | `attendance_records` | 修正後の現在実績とversion |
 | `punch_events` | 上書きしない打刻事実とGPS取得状態 |
 | `attendance_requests` | 休暇・欠勤申請と審査状態、作成・判断の冪等性receipt |
-| `audit_logs` | 修正、承認、却下、取消、resetの監査と勤怠修正receipt（GPSは保存しない） |
+| `audit_logs` | 勤務予定CRUD、修正、承認、却下、取消、resetの監査と冪等receipt（GPSは保存しない） |
 | `sessions` | hash化したsession/CSRF tokenと有効期限 |
 | `login_rate_limits` | account・IP fingerprint単位の試行制限 |
 
@@ -121,7 +124,7 @@ npm run db:reset:local
 - `db:reset:local`: 既存ローカルデータを外部キー順に空にし、全migrationを適用した後、固定migration seedを動的な当日データへ置き換えます。
 - `LOCAL_DEMO_EMPLOYEE_PASSWORD` と `LOCAL_DEMO_ADMIN_PASSWORD` はローカルseedの上書き専用です。hosted環境へ登録しません。
 
-`seed` と `reset` subcommandは意図的にWranglerの `--local` だけを使用します。`render` subcommandはD1へ接続しません。実D1への第一経路は、Sites標準packageに同梱した `0001` → `0002` → `0003` です。Sites connectorは物理D1名、migration履歴、SQL実行を公開しないため、初回login POSTの `lib/server/demo-bootstrap.ts` が実URLから状態を検証します。3つの公開デモgateが有効で、8つのアプリ表（`login_rate_limits`を除く）が完全に空なら原子的batchで初期化します。既に `0003` の固定seedがある場合は、全テーブル件数と既知IDが厳密一致するときだけ、100,000反復の公開デモ資格情報と実行日シナリオへ一度だけ整合します。旧600,000反復hashで整合済みの場合も、全6件のdirectory値・旧hash・初期化監査・sessionなしが完全一致するときだけ、勤怠をresetせずhashを更新します。いずれも通常INSERTの一意markerで遅い並行batch全体をrollbackし、完成状態を再照会できた場合だけno-opとして続行します。任意の既存userはno-op、userなしの部分状態は503で停止し、既存データを変更しません。ローカルscriptをremote向けに変更しないでください。
+`seed` と `reset` subcommandは意図的にWranglerの `--local` だけを使用します。`render` subcommandはD1へ接続しません。実D1への第一経路は、Sites標準packageに同梱した `0001` → `0002` → `0003` → `0004` です。Sites connectorは物理D1名、migration履歴、SQL実行を公開しないため、初回login POSTの `lib/server/demo-bootstrap.ts` が実URLから状態を検証します。3つの公開デモgateが有効で、8つのアプリ表（`login_rate_limits`を除く）が完全に空なら原子的batchで初期化します。既に `0003` の固定seedがある場合は、全テーブル件数と既知IDが厳密一致するときだけ、100,000反復の公開デモ資格情報と実行日シナリオへ一度だけ整合します。旧600,000反復hashで整合済みの場合も、全6件のdirectory値・旧hash・初期化監査・sessionなしが完全一致するときだけ、勤怠をresetせずhashを更新します。いずれも通常INSERTの一意markerで遅い並行batch全体をrollbackし、完成状態を再照会できた場合だけno-opとして続行します。任意の既存userはno-op、userなしの部分状態は503で停止し、既存データを変更しません。ローカルscriptをremote向けに変更しないでください。
 
 ### 4.3 アプリ内reset
 
@@ -174,7 +177,7 @@ npm run db:reset:local
 | `/me/history` | 従業員 | 自分の月次実績、実績修正 |
 | `/me/requests` | 従業員 | 自分の申請一覧、作成、取消 |
 | `/admin` | 管理者 | `/admin/today` へredirect |
-| `/admin/today` | 管理者 | 日別の全従業員実績 |
+| `/admin/today` | 管理者 | 日別の全従業員実績と勤務予定の登録・更新・削除 |
 | `/admin/sites` | 管理者 | 日付・現場別実績 |
 | `/admin/requests` | 管理者 | 申請一覧、承認、却下 |
 | `/admin/users` | 管理者 | 従業員選択 |
@@ -207,6 +210,8 @@ npm run db:reset:local
 | `GET` | `/api/admin/users` | admin | 従業員一覧 |
 | `GET` | `/api/admin/users/:userId/attendance?month=YYYY-MM` | admin | 対象者の月次実績 |
 | `PATCH` | `/api/admin/attendance/:recordId` | admin | 時刻・休憩・区分修正、理由・version・UUID必須 |
+| `PUT` | `/api/admin/users/:userId/schedules/:workDate` | admin | 勤務予定の登録・更新、version・UUID冪等key検査 |
+| `DELETE` | `/api/admin/users/:userId/schedules/:workDate` | admin | 勤務予定の削除、version・UUID冪等key検査 |
 | `GET` | `/api/admin/audit?limit=...&entityType=...&entityId=...` | admin | WHERE適用後にLIMITする監査ログ |
 | `POST` | `/api/admin/reset` | admin＋CSRF＋3つのdemo gate | 架空勤怠データを初期状態へ戻す |
 
@@ -249,10 +254,11 @@ Phase 2では実URLをinstallし、standalone起動、safe area、offline案内�
 4. 通常モードのGPS許可・拒否・timeoutはローカルの隔離D1と合成座標だけで確認する。実URLの公開デモでは端末GPSを要求せず、直接送った座標も破棄することを確認する。
 5. 本人修正が保存され、元の打刻イベントを保持したまま監査ログが増える。
 6. 申請作成・取消・承認・却下と、打刻済み日の承認競合を確認する。
-7. reloadと別sessionでD1永続化を確認する。
-8. admin reset後に架空初期状態へ戻り、監査される。
-9. manifest、Service Worker、standalone、offline案内を確認する。
-10. 実在の個人情報、実credential、実GPSが含まれないことを確認する。
+7. 管理者が勤務予定を登録・更新・削除し、version競合、打刻・申請による変更不可、監査差分を確認する。
+8. reloadと別sessionでD1永続化を確認する。
+9. admin reset後に架空初期状態へ戻り、監査される。
+10. manifest、Service Worker、standalone、offline案内を確認する。
+11. 実在の個人情報、実credential、実GPSが含まれないことを確認する。
 
 ## 12. 既知制約・Phase 2確認事項
 
@@ -261,7 +267,7 @@ Phase 2では実URLをinstallし、standalone起動、safe area、offline案内�
 3. **data residencyなし**: ローンチ時点でSite、D1/R2、生成物、ログを含むdata/inference residencyはありません。架空データだけを使用します。[OpenAI Sites documentation](https://learn.chatgpt.com/docs/sites)
 4. **Vinext beta advisory**: `vinext@1.0.0-beta.5` がadvisory対象の `image-size@2.0.2` を固定しています。npmの提示する解消は互換性を崩すdowngradeで、Phase 1では適用していません。公開前に修正版の有無と入力面を再評価します。
 5. **実D1経路**: migration・seedはローカルで成功済みですが、SitesがprovisionしたD1への適用経路、実行結果、再実行性、backup/rollbackをPhase 2で確認します。
-6. **D1 batch**: HTTP resetのstatement数、申請判断・勤怠修正の条件付きbatch、実環境latency、failure時挙動を実D1で確認します。
+6. **D1 batch**: HTTP resetのstatement数、申請判断・勤怠修正・勤務予定CRUDの条件付きbatch、実環境latency、failure時挙動を実D1で確認します。
 7. **PBKDF2 host上限**: Sites本番workerdはPBKDF2を100,000反復までに制限し、600,000反復は `NotSupportedError` になります。公開済みの架空デモaccountだけ100,000反復へ互換調整します。600,000反復を必要とする実credential運用はPhase 1へ戻す課題です。[workerd limit enforcer](https://github.com/cloudflare/workerd/blob/main/src/workerd/io/limit-enforcer.h#L27)
 8. **session運用**: 自動的な期限切れsession清掃jobはありません。PoC後に運用する場合はcleanup方針が必要です。
 9. **PWA実URL**: Sitesのresponse header・scope下でinstallabilityとoffline fallbackを確認します。

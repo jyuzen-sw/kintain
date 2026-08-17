@@ -3,7 +3,7 @@ import { HttpError } from "@/lib/server/http";
 
 export interface AdminAuditQuery {
   limit: number;
-  entityType?: "attendance_record" | "attendance_request";
+  entityType?: "attendance_record" | "attendance_request" | "work_schedule";
   entityId?: string;
 }
 
@@ -31,7 +31,11 @@ export function readAdminAuditQuery(request: Request): AdminAuditQuery {
   const requestedLimit = Number(params.get("limit") ?? "100");
   const rawEntityType = params.get("entityType")?.trim();
   let entityType: AdminAuditQuery["entityType"];
-  if (rawEntityType === "attendance_record" || rawEntityType === "attendance_request") {
+  if (
+    rawEntityType === "attendance_record" ||
+    rawEntityType === "attendance_request" ||
+    rawEntityType === "work_schedule"
+  ) {
     entityType = rawEntityType;
   } else if (rawEntityType) {
     throw new HttpError(400, "INVALID_AUDIT_ENTITY_TYPE", "監査対象の種類を確認してください。");

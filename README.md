@@ -8,7 +8,7 @@
 ## 主な機能
 
 - 従業員: 出勤・退勤、GPS取得状態の記録、当日状態、月次実績、本人修正、休暇・欠勤申請、申請取消
-- 管理者: 当日・現場別・個人別の実績確認、全期間の実績修正、申請承認・却下、監査ログ、デモデータreset
+- 管理者: 当日・現場別・個人別の実績確認、日次一覧からの勤務予定登録・更新・削除、全期間の実績修正、申請承認・却下、監査ログ、デモデータreset
 - 認証・認可: メールアドレス＋パスワード、D1 session、ロール判定、CSRF防御、同一origin検査、ログイン試行制限
 - データ: 予定、勤怠実績、打刻イベント、申請、監査、sessionをD1へ保存
 - PWA: manifest、Service Worker、オフライン案内、更新通知、safe area対応
@@ -64,7 +64,7 @@ npm run dev
 | `npm run test:integration` | Workers runtime＋ローカルD1の結合テスト |
 | `npm run test:e2e` | Playwright E2E |
 | `npm run test:coverage` | coverage取得 |
-| `npm run db:migrate:local` | `0001_initial.sql`、`0002_request_idempotency.sql`、`0003_demo_seed.sql` を順にローカルD1へ適用 |
+| `npm run db:migrate:local` | `0001_initial.sql`、`0002_request_idempotency.sql`、`0003_demo_seed.sql`、`0004_work_schedule_management.sql` を順にローカルD1へ適用 |
 | `npm run db:seed:local` | 空のローカルD1へ架空seedを投入 |
 | `npm run db:seed:render` | D1へ接続せず、架空seed SQLを検証・再生成するため標準出力へ生成 |
 | `npm run db:reset:local` | ローカルD1を初期架空データへ戻す |
@@ -74,7 +74,7 @@ npm run dev
 ## データと環境設定
 
 - D1 bindingはコード、Wrangler、Sites manifestのすべてで `DB` に固定しています。
-- schemaは [`db/schema.ts`](./db/schema.ts)、migrationは [`drizzle/0001_initial.sql`](./drizzle/0001_initial.sql) → [`drizzle/0002_request_idempotency.sql`](./drizzle/0002_request_idempotency.sql) → [`drizzle/0003_demo_seed.sql`](./drizzle/0003_demo_seed.sql) の順です。`0003` は空の実D1へ一度だけ適用する架空デモデータ移行です。
+- schemaは [`db/schema.ts`](./db/schema.ts)、migrationは [`drizzle/0001_initial.sql`](./drizzle/0001_initial.sql) → [`drizzle/0002_request_idempotency.sql`](./drizzle/0002_request_idempotency.sql) → [`drizzle/0003_demo_seed.sql`](./drizzle/0003_demo_seed.sql) → [`drizzle/0004_work_schedule_management.sql`](./drizzle/0004_work_schedule_management.sql) の順です。`0003` は空の実D1へ一度だけ適用する架空デモデータ移行、`0004` は勤務予定へ楽観ロック用versionを追加する前進migrationです。
 - Sites実環境で架空データ行が存在しない場合は、3つの公開デモgateがすべて有効なときに限り、初回login POSTが8つのアプリ表（rate limit表を除く）の完全な空を確認して既定の架空user・site・当日シナリオを1つのD1 batchで初期化します。また、Sitesが同梱migrationの固定seedを適用済みの場合は、全件数と既知IDが `0003_demo_seed.sql` と完全一致するときだけ、公開資格情報と実行日シナリオへ一度だけ同じbatchで整合します。どちらも一意markerで並行要求の片方を全体rollbackし、先行処理の完成を確認してno-opにします。任意の既存データや部分状態は変更しません。
 - 公開デモaccountは個別salt付きPBKDF2-SHA-256を維持し、Sites本番workerdのhost上限に合わせて100,000反復で固定します。既に `0003` の600,000反復hashを整合済みのD1は、6件すべての既知ID・directory値・旧hash・初期化監査が完全一致するときだけ、勤怠データを触らず一度だけ100,000反復hashへ更新します。
 - UTC日時はISO 8601のTEXT、勤務日はAsia/Tokyo基準の `YYYY-MM-DD` で保存します。
@@ -91,6 +91,7 @@ npm run dev
 
 - `punch_events` は打刻事実として変更せず、現在値は `attendance_records`、変更はGPSを含まない可変勤怠項目だけを `audit_logs` へ保存します。
 - 打刻、勤怠修正、申請作成・取消・審査はUUIDとDB上のreceiptで冪等化します。同じpayloadの再送は同じ結果、同じUUIDの別操作への流用は409です。画面上で失敗後に入力内容を変えた場合は新しいUUIDへ切り替えます。
+- 勤務予定の登録・更新・削除もUUIDと監査ログ上のreceipt、versionで冪等化・競合検出します。打刻または入力済み実績、申請中・承認済み申請がある日は変更できませんが、打刻準備で作られただけの空の通常勤務レコードは予定変更を妨げません。
 - 退勤時の自動休憩は予定値、なければ60分です。ただし勤務経過がそれより短い場合は「休憩は勤務経過以下」という確定制約を守るため、自動値だけを経過分数まで縮めます。利用者が明示入力した過大値は保存を拒否します。
 - 公開デモの3つのgateが有効な場合、訪問者の実GPSを端末で取得せず、直接APIへ送られた座標もサーバーで破棄します。通常モードでは任意GPS機能を利用できます。seedの座標は規則的に生成した合成値です。
 
