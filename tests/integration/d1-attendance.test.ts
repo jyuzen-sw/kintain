@@ -760,6 +760,78 @@ describe("D1を使う勤怠フロー", () => {
     );
   });
 
+  it("既存のTEXT識別子を持つ勤務予定を管理者APIから更新・削除できる", async () => {
+    await seedSession(admin, "admin-token", "admin-csrf");
+    const workDate = "2026-08-12";
+    const scheduleId = "schedule-seeded-text-id";
+    await testEnv.DB.prepare(
+      `INSERT INTO work_schedules
+         (id, user_id, site_id, work_date, scheduled_start_at, scheduled_end_at,
+          scheduled_break_minutes, note)
+       VALUES (?, ?, 'site-a', ?, '2026-08-12T00:00:00.000Z',
+               '2026-08-12T09:00:00.000Z', 60, '既存予定')`,
+    )
+      .bind(scheduleId, employee.id, workDate)
+      .run();
+    const context = {
+      params: Promise.resolve({ userId: employee.id, workDate }),
+    };
+    const requestFor = (
+      body: Record<string, unknown>,
+      method: "PUT" | "DELETE" = "PUT",
+    ) =>
+      new Request(
+        `http://local.test/api/admin/users/${employee.id}/schedules/${workDate}`,
+        {
+          method,
+          headers: {
+            "content-type": "application/json",
+            cookie: "kintain_session=admin-token",
+            origin: "http://local.test",
+            "sec-fetch-site": "same-origin",
+            "x-csrf-token": "admin-csrf",
+          },
+          body: JSON.stringify(body),
+        },
+      );
+
+    const updatedResponse = await putAdminSchedule(
+      requestFor({
+        scheduleId,
+        version: 1,
+        siteId: "site-a",
+        scheduledStartAt: "2026-08-12T00:30:00.000Z",
+        scheduledEndAt: "2026-08-12T08:30:00.000Z",
+        scheduledBreakMinutes: 45,
+        note: "更新予定",
+        clientRequestId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      }),
+      context,
+    );
+    expect(updatedResponse.status).toBe(200);
+    expect(await updatedResponse.json()).toMatchObject({
+      data: { id: scheduleId, version: 2, note: "更新予定" },
+    });
+
+    const deletedResponse = await deleteAdminSchedule(
+      requestFor(
+        {
+          scheduleId,
+          version: 2,
+          clientRequestId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        },
+        "DELETE",
+      ),
+      context,
+    );
+    expect(deletedResponse.status).toBe(204);
+    expect(
+      await testEnv.DB.prepare("SELECT id FROM work_schedules WHERE id = ?")
+        .bind(scheduleId)
+        .first(),
+    ).toBeNull();
+  });
+
   it("空の勤怠レコードでは勤務予定を変更でき、打刻実績や処理中の申請があると拒否する", async () => {
     const service = new AttendanceService(testEnv.DB, () => fixedNow);
     await testEnv.DB.prepare(

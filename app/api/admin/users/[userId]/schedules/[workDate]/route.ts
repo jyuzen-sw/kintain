@@ -17,9 +17,15 @@ const paramsSchema = z.object({
   workDate: z.iso.date("対象日を正しく入力してください。"),
 });
 
+const scheduleIdSchema = z
+  .string()
+  .trim()
+  .min(1, "勤務予定の識別子が不正です。")
+  .max(200, "勤務予定の識別子が不正です。");
+
 const saveSchema = z
   .object({
-    scheduleId: z.uuid("勤務予定の識別子が不正です。").nullable(),
+    scheduleId: scheduleIdSchema.nullable(),
     version: z.number().int().positive().nullable(),
     siteId: z.string().trim().min(1, "現場を選択してください。").max(200),
     scheduledStartAt: utcDateTimeSchema,
@@ -39,7 +45,7 @@ const saveSchema = z
   });
 
 const deleteSchema = z.object({
-  scheduleId: z.uuid("勤務予定の識別子が不正です。"),
+  scheduleId: scheduleIdSchema,
   version: z.number().int().positive(),
   clientRequestId: z.uuid("再送用の識別子が不正です。"),
 });
