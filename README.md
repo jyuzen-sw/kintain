@@ -60,7 +60,7 @@ npm run dev
 | `npm run db:seed:local` | 空のローカルD1へ架空データを投入する |
 | `npm run db:reset:local` | ローカルD1を初期架空データへ戻す |
 
-`db:seed:local`は既存seedへの重複投入を想定していません。通常の再初期化には`db:reset:local`を使用してください。
+`db:seed:local`は既存seedへの重複投入を想定していません。`db:migrate:local`は架空データを投入する`0003_demo_seed.sql`も適用するため、`0003`未適用かつ既存データのあるローカルD1には実行しないでください。固定データの混入や主キー競合が起こり得ます。既存データを破棄する意図がある場合だけ`db:reset:local`を使用し、保持する場合はbackupを取得して別の移行手順を用意してください。
 
 ## 設定とデータ
 

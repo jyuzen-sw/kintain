@@ -49,8 +49,10 @@ Sites自体の提供範囲と操作方法は[OpenAI Sites公式ドキュメン�
 1. 固定したcommitからversionを保存し、まだdeployしない。
 2. versionが参照するcommit、build結果、D1 binding、migration、runtime environment valueの設定有無を確認する。
 3. previewでログイン、従業員画面、管理者画面、responsive表示を確認する。
-4. 承認済みversionを、まずownerとworkspace adminに限定してdeployする。
-5. 次節のsmokeが完了してから、責任者が承認した最小の共有範囲へ変更する。
+4. deploy前にSiteの共有範囲をownerとworkspace adminへ制限し、従来の訪問者が到達できないことを確認する。
+5. 共有範囲を制限したまま、承認済みversionをdeployする。
+6. 次節のsmokeを完了する。
+7. smoke完了後、責任者が承認した最小の共有範囲へ変更する。
 
 すべてのdeployment URLはproductionとして扱います。試行錯誤には未deployのsaved versionを使用します。
 
