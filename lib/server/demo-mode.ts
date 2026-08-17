@@ -3,6 +3,8 @@ export type DemoModeEnvironment = Pick<
   "ALLOW_PUBLIC_DEMO" | "DEMO_MODE" | "SHOW_DEMO_CREDENTIALS"
 >;
 
+export const PUBLIC_DEMO_PASSWORD_HASH_ITERATIONS = 100_000;
+
 export function isPublicDemoMode(environment: DemoModeEnvironment): boolean {
   return (
     environment.DEMO_MODE === "true" &&

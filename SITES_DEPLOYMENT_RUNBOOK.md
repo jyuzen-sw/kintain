@@ -22,8 +22,8 @@ OpenAI公式では、Sitesの公開処理は「review可能なversionを保存�
 - commitが引き継ぎ記録と一致しない、またはworktreeがdirty
 - `npm ci`、lint、typecheck、unit、integration、E2E、buildのいずれかが失敗
 - SitesがVinext/Worker artifactまたはD1 bindingを受理しない
-- `0001_initial.sql`、`0002_request_idempotency.sql` の順次適用結果を確認できない
-- 実D1へ架空seedを安全に投入する経路が確認できない
+- `0001_initial.sql`、`0002_request_idempotency.sql`、`0003_demo_seed.sql` の同梱順、deploy結果、または実URLでのschema利用を確認できない
+- `0003`、公開デモgate下の空D1限定bootstrap、または厳密に識別した同梱seedの一度限りの整合のいずれでも、架空seedを安全に投入・確認できない
 - 実在人物のメール、勤怠、位置情報、credentialが混入
 - environment valueをprompt、添付、source、logへ転記する必要が生じる
 - 一般公開の責任者承認がない
@@ -75,7 +75,7 @@ Sitesへの依頼内容には、次の不変条件を含めます。
 - Vinext starter互換のWorker ESMを使う。
 - D1の論理bindingは `DB` から変えない。
 - R2は使わない。
-- schemaは `db/schema.ts`、migrationは `drizzle/0001_initial.sql` → `drizzle/0002_request_idempotency.sql` を正とする。
+- schemaは `db/schema.ts`、migrationは `drizzle/0001_initial.sql` → `drizzle/0002_request_idempotency.sql` → `drizzle/0003_demo_seed.sql` を正とする。`0003` は空D1専用の一度限りの架空データmigrationであり、schemaは変更しない。
 - 架空データ以外を投入しない。
 - Sites accessとアプリ内login/role認可を別々に維持する。
 - 既存のテストやsecurity checkを外さない。
@@ -92,13 +92,13 @@ OpenAI公式showcaseもVinext、Worker互換ESM、D1 `DB`、R2なし、Drizzle s
 
 公式ドキュメントでは、ローカルstarterは `project_id` なしで開始でき、Sitesがhosted projectをprovisionした後にproject linkageを追加します。また、永続的なstructured dataにはD1を使います。[OpenAI Sites documentation](https://learn.chatgpt.com/docs/sites)
 
-## 4. migration `0001` → `0002` を適用する
+## 4. migration `0001` → `0002` → `0003` を適用する
 
 1. 対象が新規の空D1であることを確認する。
-2. `drizzle/0001_initial.sql` と `drizzle/0002_request_idempotency.sql` を開き、9テーブル、前進処理、indexを再確認する。
-3. Sitesが提供するmigration-awareなD1操作経路が、migration名・適用履歴・原子的なファイル適用を保証することを確認する。raw SQLの逐次実行しかできない場合は停止する。
-4. 確認済みの経路で `0001_initial.sql`、続けて `0002_request_idempotency.sql` を各一度だけ適用する。
-5. 2つのmigration名、対象resource、開始・終了時刻、履歴、結果を個別に記録する。
+2. `drizzle/0001_initial.sql`、`drizzle/0002_request_idempotency.sql`、`drizzle/0003_demo_seed.sql` を開き、9テーブル、前進処理、index、架空seedだけの `INSERT` を再確認する。
+3. package内の3ファイルとdeploy成功を確認する。Sites connectorが物理D1名、migration履歴、SQL照会を公開しない場合は、その観測制約を結果へ明記し、実URLのAPIでschemaとデータを確認する。
+4. 確認済みの経路で `0001_initial.sql`、`0002_request_idempotency.sql`、`0003_demo_seed.sql` をこの順で各一度だけ同梱・deployする。
+5. 3つのmigration名、開始・終了時刻、deploy結果を記録する。物理resource名とmigration履歴がconnectorから取得不能なら、取得不能と代替検証結果を記録し、推測値を書かない。
 6. 次のテーブルが存在することを確認する。
 
 ```text
@@ -116,32 +116,26 @@ login_rate_limits
 7. `users(normalized_email)`、予定・実績の日次一意制約、打刻冪等key、申請の部分一意制約、外部キーが存在することを確認する。
 8. `attendance_requests.creation_request_id` が `NOT NULL UNIQUE`、`audit_logs.mutation_id` がnullable uniqueであることを確認する。
 
-`0002`は既存の`0001`適用済みD1を前進できるよう申請テーブルを再構築します。fresh D1でも必ず両方を適用します。既存schemaへ再適用しません。migration履歴が不明、部分適用、schema差分がある場合はdeployを止めます。D1 schemaの変更はsaved versionのrollbackだけでは戻らないため、先にbackup/export手段と復旧責任者を確認します。
+`0002`は既存の`0001`適用済みD1を前進できるよう申請テーブルを再構築します。`0003`はPhase 2で固定した架空データを空D1へ一度だけ投入する前進データmigrationです。fresh D1では3本すべてを順に同梱し、既存データ入りD1へ`0003`を適用しません。connectorが履歴を公開しないこと自体は観測制約として記録し、deploy失敗、schema差分、部分適用の兆候、または既存データがある場合はdeployを止めます。saved versionのrollbackだけではD1 schema/dataは戻らないため、先にbackup/export手段と復旧責任者を確認します。
 
 ## 5. 架空seedを実D1へ投入する
 
-`scripts/local-db.ts` の `seed` と `reset` はPhase 1の誤操作防止のため `--local` 固定です。`db:seed:render` はD1へ接続せず、同じ架空データとpassword hashをSQLとして標準出力へ生成します。Phase 2は生成SQLをレビューしてから、Sitesが承認する実D1操作経路で投入します。
+`scripts/local-db.ts` の `seed` と `reset` は誤操作防止のため `--local` 固定です。Phase 2では、レビュー済みの生成結果を `drizzle/0003_demo_seed.sql` として固定し、Sites標準packageが `dist/.openai/drizzle/` へ同梱するmigration-aware経路で実D1へ一度だけ適用します。ローカルscriptを実D1へ向けません。
 
-1. seed対象が空であることを確認する。
+1. 新規Siteとして空D1を意図していることを確認する。connectorから実データを照会できない場合は、その制約を記録して既存Siteへ流用しない。
 2. ローカルpassword上書き用の環境変数が設定されていないことを確認する。
-3. D1へ接続せず、一度だけ架空seed SQLを一時ファイルへ生成する。
+3. `0003_demo_seed.sql` が7つの `INSERT` だけで構成され、実在ドメイン、実名、実勤怠、実GPSを含まないことを確認する。
+4. 6架空user、2架空site、当日・前日の予定、勤務中・退勤済み・出勤前・病欠承認済み、合成GPS状態、pending・approved・rejectedの申請例、監査例を確認する。
+5. 必要に応じて `npm run --silent db:seed:render` を一時出力し、構造と架空シナリオが一致することを確認する。saltと生成日時が毎回変わるため、byte一致は要求しない。
+6. package内に `0001_initial.sql`、`0002_request_idempotency.sql`、`0003_demo_seed.sql` がこの番号順で存在することを確認する。
+7. Sitesのmigration-aware経路で3本を同梱・deployする。connectorから履歴を照会できない場合は、deploy結果と実URLのschema利用を記録する。
+8. user、site、schedule、record、punch、request、auditの件数と参照整合性をアプリ挙動または承認済みD1照会で確認する。
+9. 架空accountで通常のlogin APIを通過できることを確認する。schemaは利用できても全架空accountが401となる場合は、workerdのPBKDF2 host上限も確認し、3つの公開デモgate下で動く `ensurePublicDemoBootstrap()` を使う互換性versionへ切り替える。8つのアプリ表（`login_rate_limits`を除く）が合計0件なら既定user・siteと当日シナリオを1つのD1 batchで作成する。`0003` のデータが存在する場合は、全件数と既知IDが固定seedと完全一致するときだけ、100,000反復の公開資格情報と実行日シナリオへ一度だけ整合する。旧600,000反復hashで整合済みの場合も、全6件のdirectory値・旧hash・初期化監査・sessionなしが完全一致するときだけ、勤怠をresetせずhashだけをatomic更新する。各処理は一意markerを使い、並行要求の競合batchは全体rollbackして、完成済み既定状態だけをno-opとして認める。任意の既存userは変更せず、userなしの部分状態は503で停止する。
+10. 初回login後に管理者の `POST /api/admin/reset` を実行し、当日シナリオへ戻ることと再実行性を確認する。
 
-```bash
-npm run --silent db:seed:render > /tmp/kintain-phase2-seed.sql
-```
+`0003` は既存データ入りD1へ再適用しません。部分適用の兆候がある場合は盲目的に再実行せず、事前承認した空D1の再作成またはbackupからのrestoreへ戻ります。履歴がconnectorから取得不能なら、その事実と実URLの代替検証を記録します。`db:seed:local` は非空ローカルDBを拒否し、`db:reset:local` は既存データを明示的に消してから全migrationと動的seedを再現します。
 
-4. 生成SQLを開き、`INSERT` だけで構成され、実在ドメイン、実名、実勤怠、実GPSが含まれないことを確認する。
-5. 6架空user、2架空site、当日・前日の予定、勤務中・退勤済み・出勤前・病欠承認済みが含まれることを確認する。
-6. 規則的に生成した合成GPS、拒否・unavailable・timeout例、pending・approved・rejectedの申請例、監査例を確認する。
-7. Sitesの承認済み実D1経路がseed全体の原子的適用を保証することを確認する。保証できない場合は停止する。
-8. レビュー済みの同じ一時ファイルを、確認済みの経路で一度だけ適用する。
-9. user、site、schedule、record、punch、request、auditの件数と参照整合性を確認する。
-10. 架空accountで通常のlogin APIを通過できることを確認する。
-11. 適用後、一時SQLをGitへ追加せず、作業環境から除去する。
-
-renderせずにローカルscriptを実D1へ向けたり、source内の `--local` を場当たり的に除去したりしません。Sites側にレビュー済みSQLを原子的に適用できる安全な経路がない場合は停止条件です。seedが部分適用された場合は盲目的に再実行せず、事前承認した空D1の再作成またはbackupからのrestoreへ戻ります。必要なbootstrap変更は独立した互換性commitとしてreviewし、全検査をやり直します。
-
-管理者の `POST /api/admin/reset` は初回bootstrapではありません。既存user・siteを前提に勤怠系の架空データを戻す日常デモ用です。
+管理者の `POST /api/admin/reset` 自体は空D1の初回bootstrapではありません。初回bootstrapは、公開デモgate下のlogin POSTが8つのアプリ表の合計0件を確認した場合だけ、既定user・siteの作成と同じreset statement群を原子的に実行し、監査理由に自動初期化と記録します。Sites同梱seedの整合も全件数と既知IDが固定seedに厳密一致した場合だけ同じstatement群を実行し、別の監査sourceと一意markerを残します。部分状態と任意の既存状態は変更しません。通常のreset APIは既存user・siteを前提に、勤怠系の架空データを戻す日常デモ用です。
 
 ## 6. hosted environment valuesを設定する
 
@@ -313,5 +307,5 @@ smoke完了後、責任者承認のある最小範囲へ変更します。一般
 - environment valuesはSite settingsに置き、manifestへ書かない。
 - Sitesはローンチ時点でdata residency / inference residencyを提供しない。Site code、D1/R2、artifact、logも含む。
 - Protected Health Information、決済カード情報、実在従業員データを扱わない。
-- 実D1のbatch、PBKDF2 CPU時間、PWA挙動を実測する。
+- 実D1のbatch、公開デモPBKDF2 100,000反復のlogin latency、PWA挙動を実測する。600,000反復を必要とする実credential運用はPhase 1へ戻す。
 - Vinext betaと `image-size` advisoryを再評価し、解消できなければPoC限定を維持する。

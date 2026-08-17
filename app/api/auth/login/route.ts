@@ -2,7 +2,8 @@ import { z } from "zod";
 
 import { loginWithPassword } from "@/lib/server/auth";
 import { serializeCsrfCookie, serializeSessionCookie } from "@/lib/server/cookies";
-import { getDatabase } from "@/lib/server/db";
+import { getDatabase, getRuntimeEnv } from "@/lib/server/db";
+import { ensurePublicDemoBootstrap } from "@/lib/server/demo-bootstrap";
 import {
   assertTrustedMutation,
   errorResponse,
@@ -20,8 +21,15 @@ export async function POST(request: Request): Promise<Response> {
   try {
     assertTrustedMutation(request);
     const input = parseInput(loginSchema, await readJsonBody(request));
+    const database = getDatabase();
+    const runtimeEnv = getRuntimeEnv();
+    await ensurePublicDemoBootstrap({
+      database,
+      environment: runtimeEnv,
+    });
     const result = await loginWithPassword({
-      database: getDatabase(),
+      database,
+      environment: runtimeEnv,
       request,
       email: input.email,
       password: input.password,

@@ -13,8 +13,10 @@ import { POST as createRequest } from "@/app/api/me/requests/route";
 import type { SessionUser } from "@/lib/contracts/types";
 import { AttendanceService } from "@/lib/server/attendance-service";
 import { hashPassword, sha256Base64Url } from "@/lib/server/crypto";
+import { ensurePublicDemoBootstrap } from "@/lib/server/demo-bootstrap";
 import { resetDemoAttendanceData } from "@/lib/server/demo-reset";
 import { HttpError } from "@/lib/server/http";
+import packagedDemoSeedSql from "@/drizzle/0003_demo_seed.sql?raw";
 
 interface IntegrationEnv extends Env {
   TEST_MIGRATIONS: Parameters<typeof applyD1Migrations>[1];
@@ -94,6 +96,42 @@ async function seedSession(
       now,
     )
     .run();
+}
+
+function demoLoginRequest(email: string, password: string): Request {
+  return new Request("http://local.test/api/auth/login", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      origin: "http://local.test",
+      "sec-fetch-site": "same-origin",
+    },
+    body: JSON.stringify({ email, password }),
+  });
+}
+
+async function clearApplicationData(): Promise<void> {
+  await testEnv.DB.batch([
+    testEnv.DB.prepare("DELETE FROM sessions"),
+    testEnv.DB.prepare("DELETE FROM audit_logs"),
+    testEnv.DB.prepare("DELETE FROM punch_events"),
+    testEnv.DB.prepare("DELETE FROM attendance_requests"),
+    testEnv.DB.prepare("DELETE FROM attendance_records"),
+    testEnv.DB.prepare("DELETE FROM work_schedules"),
+    testEnv.DB.prepare("DELETE FROM login_rate_limits"),
+    testEnv.DB.prepare("DELETE FROM work_sites"),
+    testEnv.DB.prepare("DELETE FROM users"),
+  ]);
+}
+
+async function applyPackagedDemoSeed(): Promise<void> {
+  const statements = packagedDemoSeedSql
+    .split(/;\s*(?:\r?\n|$)/u)
+    .map((statement) => statement.trim())
+    .filter(Boolean)
+    .map((statement) => testEnv.DB.prepare(statement));
+  expect(statements).toHaveLength(7);
+  await testEnv.DB.batch(statements);
 }
 
 describe("D1を使う勤怠フロー", () => {
@@ -704,7 +742,427 @@ describe("D1を使う勤怠フロー", () => {
       .bind(employee.id)
       .first<{ count: number }>();
     expect(sessions?.count).toBe(1);
+    const schedules = await testEnv.DB.prepare(
+      "SELECT count(*) AS count FROM work_schedules",
+    ).first<{ count: number }>();
+    expect(schedules?.count).toBe(0);
   });
+
+  it("公開デモの空D1を初回ログイン時だけ架空データへ初期化する", async () => {
+    await clearApplicationData();
+    await testEnv.DB.prepare(
+      `INSERT INTO login_rate_limits
+         (scope_type, scope_key_hash, window_started_at, failure_count)
+       VALUES ('ip', 'unrelated-bootstrap-retry', '2026-08-10T00:00:00.000Z', 0)`,
+    ).run();
+
+    const failedLogin = await login(
+      demoLoginRequest("admin@example.test", "WrongDemoPass!2026"),
+    );
+    expect(failedLogin.status).toBe(401);
+    expect(await failedLogin.json()).toMatchObject({
+      error: {
+        code: "INVALID_CREDENTIALS",
+        message: "メールアドレスまたはパスワードを確認してください。",
+      },
+    });
+
+    const firstLogin = await login(
+      demoLoginRequest("admin@example.test", "AdminDemo!2026"),
+    );
+    expect(firstLogin.status).toBe(200);
+    const firstCounts = await testEnv.DB.prepare(
+      `SELECT
+         (SELECT count(*) FROM users) AS users,
+         (SELECT count(*) FROM work_sites) AS sites,
+         (SELECT count(*) FROM work_schedules) AS schedules,
+         (SELECT count(*) FROM attendance_records) AS records,
+         (SELECT count(*) FROM attendance_requests) AS requests,
+         (SELECT count(*) FROM audit_logs) AS audits`,
+    ).first<{
+      users: number;
+      sites: number;
+      schedules: number;
+      records: number;
+      requests: number;
+      audits: number;
+    }>();
+    expect(firstCounts).toEqual({
+      users: 6,
+      sites: 2,
+      schedules: 6,
+      records: 6,
+      requests: 3,
+      audits: 4,
+    });
+
+    const secondLogin = await login(
+      demoLoginRequest("maru.employee@example.test", "DemoPass!2026"),
+    );
+    expect(secondLogin.status).toBe(200);
+    for (const email of [
+      "batsu.employee@example.test",
+      "sankaku.employee@example.test",
+      "shikaku.employee@example.test",
+      "hishi.employee@example.test",
+    ]) {
+      expect((await login(demoLoginRequest(email, "DemoPass!2026"))).status).toBe(
+        200,
+      );
+    }
+    const unchanged = await testEnv.DB.prepare(
+      `SELECT
+         (SELECT count(*) FROM users) AS users,
+         (SELECT count(*) FROM work_schedules) AS schedules,
+         (SELECT count(*) FROM audit_logs) AS audits`,
+    ).first<{ users: number; schedules: number; audits: number }>();
+    expect(unchanged).toEqual({ users: 6, schedules: 6, audits: 4 });
+  }, 20_000);
+
+  it("Sites同梱seedを一度だけ認証可能な公開デモ状態へ整合する", async () => {
+    await clearApplicationData();
+    await applyPackagedDemoSeed();
+    const environment = {
+      DEMO_MODE: "true",
+      ALLOW_PUBLIC_DEMO: "true",
+      SHOW_DEMO_CREDENTIALS: "true",
+    };
+    const reconciliationResults = await Promise.all([
+      ensurePublicDemoBootstrap({
+        database: testEnv.DB,
+        environment,
+        now: new Date("2026-08-10T00:00:01.000Z"),
+      }),
+      ensurePublicDemoBootstrap({
+        database: testEnv.DB,
+        environment,
+        now: new Date("2026-08-10T00:00:02.000Z"),
+      }),
+    ]);
+    expect(reconciliationResults.filter(Boolean)).toHaveLength(1);
+
+    const loginResponse = await login(
+      demoLoginRequest("maru.employee@example.test", "DemoPass!2026"),
+    );
+    expect(loginResponse.status).toBe(200);
+    expect(
+      await ensurePublicDemoBootstrap({
+        database: testEnv.DB,
+        environment,
+        now: new Date("2026-08-10T00:00:03.000Z"),
+      }),
+    ).toBe(false);
+
+    const state = await testEnv.DB.prepare(
+      `SELECT
+         (SELECT count(*) FROM users WHERE active = 1) AS active_users,
+         (SELECT count(*) FROM login_rate_limits
+           WHERE scope_type = 'account'
+              AND scope_key_hash = 'demo-seed-reconcile-v1') AS markers,
+         (SELECT count(*) FROM login_rate_limits
+           WHERE scope_type = 'account'
+             AND scope_key_hash = 'demo-runtime-passwords-v1') AS runtime_markers,
+         (SELECT count(*) FROM audit_logs
+           WHERE json_extract(after_json, '$.source') =
+                  'packaged_seed_reconcile') AS reconciliation_audits`,
+    ).first<{
+      active_users: number;
+      markers: number;
+      runtime_markers: number;
+      reconciliation_audits: number;
+    }>();
+    expect(state).toEqual({
+      active_users: 6,
+      markers: 1,
+      runtime_markers: 1,
+      reconciliation_audits: 1,
+    });
+
+    await testEnv.DB.prepare(
+      `INSERT INTO login_rate_limits
+         (scope_type, scope_key_hash, window_started_at, failure_count,
+          blocked_until, updated_at)
+       VALUES ('account', 'reset-test-rate-limit',
+               '2026-08-10T00:00:03.000Z', 1, NULL,
+               '2026-08-10T00:00:03.000Z')`,
+    ).run();
+    await resetDemoAttendanceData({
+      database: testEnv.DB,
+      actorUserId: "user-admin",
+      now: new Date("2026-08-10T00:00:04.000Z"),
+    });
+    const afterReset = await testEnv.DB.prepare(
+      `SELECT
+         (SELECT count(*) FROM login_rate_limits
+           WHERE scope_type = 'account'
+             AND scope_key_hash = 'demo-seed-reconcile-v1') AS packaged_markers,
+         (SELECT count(*) FROM login_rate_limits
+           WHERE scope_type = 'account'
+             AND scope_key_hash = 'demo-runtime-passwords-v1') AS runtime_markers,
+         (SELECT count(*) FROM login_rate_limits
+           WHERE scope_key_hash = 'reset-test-rate-limit') AS ordinary_limits`,
+    ).first<{
+      packaged_markers: number;
+      runtime_markers: number;
+      ordinary_limits: number;
+    }>();
+    expect(afterReset).toEqual({
+      packaged_markers: 1,
+      runtime_markers: 1,
+      ordinary_limits: 0,
+    });
+    expect(
+      await ensurePublicDemoBootstrap({
+        database: testEnv.DB,
+        environment,
+        now: new Date("2026-08-10T00:00:05.000Z"),
+      }),
+    ).toBe(false);
+  }, 20_000);
+
+  it("旧Sites整合済みD1は勤怠を再初期化せずSites互換password hashへ更新する", async () => {
+    await clearApplicationData();
+    await applyPackagedDemoSeed();
+    await resetDemoAttendanceData({
+      database: testEnv.DB,
+      actorUserId: "user-admin",
+      now: new Date("2026-08-10T01:00:00.000Z"),
+      source: "packaged_seed_reconcile",
+    });
+    await testEnv.DB.prepare(
+      `INSERT INTO login_rate_limits
+         (scope_type, scope_key_hash, window_started_at, failure_count,
+          blocked_until, updated_at)
+       VALUES ('account', 'demo-seed-reconcile-v1',
+               '2026-08-10T01:00:00.000Z', 0, NULL,
+               '2026-08-10T01:00:00.000Z')`,
+    ).run();
+    const before = await testEnv.DB.prepare(
+      "SELECT password_hash FROM users WHERE id = 'user-maru'",
+    ).first<{ password_hash: string }>();
+
+    const environment = {
+      DEMO_MODE: "true",
+      ALLOW_PUBLIC_DEMO: "true",
+      SHOW_DEMO_CREDENTIALS: "true",
+    };
+    const results = await Promise.all([
+      ensurePublicDemoBootstrap({
+        database: testEnv.DB,
+        environment,
+        now: new Date("2026-08-10T01:00:01.000Z"),
+      }),
+      ensurePublicDemoBootstrap({
+        database: testEnv.DB,
+        environment,
+        now: new Date("2026-08-10T01:00:02.000Z"),
+      }),
+    ]);
+    expect(results.filter(Boolean)).toHaveLength(1);
+
+    const after = await testEnv.DB.prepare(
+      `SELECT
+         (SELECT password_hash FROM users WHERE id = 'user-maru')
+           AS password_hash,
+         (SELECT count(*) FROM audit_logs) AS audits,
+         (SELECT count(*) FROM login_rate_limits
+           WHERE scope_type = 'account'
+             AND scope_key_hash = 'demo-runtime-passwords-v1') AS markers`,
+    ).first<{ password_hash: string; audits: number; markers: number }>();
+    expect(after?.password_hash).not.toBe(before?.password_hash);
+    expect(after).toMatchObject({ audits: 4, markers: 1 });
+    expect(
+      (
+        await login(
+          demoLoginRequest("maru.employee@example.test", "DemoPass!2026"),
+        )
+      ).status,
+    ).toBe(200);
+  }, 20_000);
+
+  it("旧Sites整合後に変更されたpassword hashは互換更新で上書きしない", async () => {
+    await clearApplicationData();
+    await applyPackagedDemoSeed();
+    await resetDemoAttendanceData({
+      database: testEnv.DB,
+      actorUserId: "user-admin",
+      now: new Date("2026-08-10T01:00:00.000Z"),
+      source: "packaged_seed_reconcile",
+    });
+    await testEnv.DB.batch([
+      testEnv.DB.prepare(
+        `INSERT INTO login_rate_limits
+           (scope_type, scope_key_hash, window_started_at, failure_count,
+            blocked_until, updated_at)
+         VALUES ('account', 'demo-seed-reconcile-v1',
+                 '2026-08-10T01:00:00.000Z', 0, NULL,
+                 '2026-08-10T01:00:00.000Z')`,
+      ),
+      testEnv.DB.prepare(
+        `UPDATE users SET password_hash = 'changed-outside-bootstrap'
+          WHERE id = 'user-maru'`,
+      ),
+    ]);
+
+    expect(
+      await ensurePublicDemoBootstrap({
+        database: testEnv.DB,
+        environment: {
+          DEMO_MODE: "true",
+          ALLOW_PUBLIC_DEMO: "true",
+          SHOW_DEMO_CREDENTIALS: "true",
+        },
+        now: new Date("2026-08-10T01:00:01.000Z"),
+      }),
+    ).toBe(false);
+    const state = await testEnv.DB.prepare(
+      `SELECT
+         (SELECT password_hash FROM users WHERE id = 'user-maru')
+           AS password_hash,
+         (SELECT count(*) FROM login_rate_limits
+           WHERE scope_type = 'account'
+             AND scope_key_hash = 'demo-runtime-passwords-v1') AS markers`,
+    ).first<{ password_hash: string; markers: number }>();
+    expect(state).toEqual({
+      password_hash: "changed-outside-bootstrap",
+      markers: 0,
+    });
+  });
+
+  it("更新済みデータをSites同梱seedと誤認して整合しない", async () => {
+    await clearApplicationData();
+    await applyPackagedDemoSeed();
+    await testEnv.DB.prepare(
+      `UPDATE attendance_records
+          SET note = '変更済みデータ', updated_at = '2026-08-10T03:40:00.000Z'
+        WHERE id = 'attendance-maru-today'`,
+    ).run();
+
+    expect(
+      await ensurePublicDemoBootstrap({
+        database: testEnv.DB,
+        environment: {
+          DEMO_MODE: "true",
+          ALLOW_PUBLIC_DEMO: "true",
+          SHOW_DEMO_CREDENTIALS: "true",
+        },
+        now: new Date("2026-08-10T04:00:00.000Z"),
+      }),
+    ).toBe(false);
+    const record = await testEnv.DB.prepare(
+      `SELECT note, updated_at
+         FROM attendance_records
+        WHERE id = 'attendance-maru-today'`,
+    ).first<{ note: string; updated_at: string }>();
+    expect(record).toEqual({
+      note: "変更済みデータ",
+      updated_at: "2026-08-10T03:40:00.000Z",
+    });
+  });
+
+  it.each([
+    ["DEMO_MODE"],
+    ["ALLOW_PUBLIC_DEMO"],
+    ["SHOW_DEMO_CREDENTIALS"],
+  ] as const)("%sが無効なら空D1を初期化しない", async (disabledGate) => {
+    await clearApplicationData();
+    const environment = {
+      DEMO_MODE: "true",
+      ALLOW_PUBLIC_DEMO: "true",
+      SHOW_DEMO_CREDENTIALS: "true",
+      [disabledGate]: "false",
+    };
+    expect(
+      await ensurePublicDemoBootstrap({
+        database: testEnv.DB,
+        environment,
+      }),
+    ).toBe(false);
+    const count = await testEnv.DB.prepare(
+      "SELECT count(*) AS count FROM users",
+    ).first<{ count: number }>();
+    expect(count?.count).toBe(0);
+  });
+
+  it("公開デモでも部分データのあるD1は初期化せず停止する", async () => {
+    await testEnv.DB.prepare("DELETE FROM users").run();
+    const response = await login(
+      new Request("http://local.test/api/auth/login", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          origin: "http://local.test",
+          "sec-fetch-site": "same-origin",
+        },
+        body: JSON.stringify({
+          email: "admin@example.test",
+          password: "AdminDemo!2026",
+        }),
+      }),
+    );
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({
+      error: { code: "DEMO_BOOTSTRAP_UNSAFE" },
+    });
+    const counts = await testEnv.DB.prepare(
+      `SELECT
+         (SELECT count(*) FROM users) AS users,
+         (SELECT count(*) FROM work_sites) AS sites,
+         (SELECT count(*) FROM work_schedules) AS schedules`,
+    ).first<{ users: number; sites: number; schedules: number }>();
+    expect(counts).toEqual({ users: 0, sites: 1, schedules: 0 });
+  });
+
+  it("並行する公開デモ初回ログインも重複・部分投入しない", async () => {
+    await clearApplicationData();
+    const environment = {
+      DEMO_MODE: "true",
+      ALLOW_PUBLIC_DEMO: "true",
+      SHOW_DEMO_CREDENTIALS: "true",
+    };
+    const bootstrapResults = await Promise.all([
+      ensurePublicDemoBootstrap({
+        database: testEnv.DB,
+        environment,
+        now: new Date("2026-08-10T00:00:00.000Z"),
+      }),
+      ensurePublicDemoBootstrap({
+        database: testEnv.DB,
+        environment,
+        now: new Date("2026-08-10T00:00:01.000Z"),
+      }),
+    ]);
+    expect(bootstrapResults.filter(Boolean)).toHaveLength(1);
+    const responses = await Promise.all([
+      login(demoLoginRequest("admin@example.test", "AdminDemo!2026")),
+      login(demoLoginRequest("maru.employee@example.test", "DemoPass!2026")),
+    ]);
+    expect(responses.map((response) => response.status)).toEqual([200, 200]);
+    const counts = await testEnv.DB.prepare(
+      `SELECT
+         (SELECT count(*) FROM users) AS users,
+         (SELECT count(*) FROM work_sites) AS sites,
+         (SELECT count(*) FROM work_schedules) AS schedules,
+         (SELECT count(*) FROM attendance_records) AS records,
+         (SELECT count(*) FROM attendance_requests) AS requests,
+         (SELECT count(*) FROM audit_logs) AS audits`,
+    ).first<{
+      users: number;
+      sites: number;
+      schedules: number;
+      records: number;
+      requests: number;
+      audits: number;
+    }>();
+    expect(counts).toEqual({
+      users: 6,
+      sites: 2,
+      schedules: 6,
+      records: 6,
+      requests: 3,
+      audits: 4,
+    });
+  }, 20_000);
 
   it("変更APIはCSRFなしを拒否し、本人の申請作成と取消を監査ログへ残す", async () => {
     await seedSession(employee, "employee-token", "employee-csrf");

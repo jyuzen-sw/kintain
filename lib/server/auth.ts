@@ -2,17 +2,38 @@ import type { SessionUser, UserRole } from "@/lib/contracts/types";
 import { normalizeEmail } from "@/lib/domain/auth";
 import { D1AuthRepository, type AuthenticatedSession } from "@/lib/repositories/d1-auth-repository";
 import { readSessionToken } from "@/lib/server/cookies";
-import { createOpaqueToken, fingerprintIdentifier, sha256Base64Url, verifyPassword } from "@/lib/server/crypto";
+import {
+  createOpaqueToken,
+  fingerprintIdentifier,
+  PASSWORD_HASH_ITERATIONS,
+  sha256Base64Url,
+  verifyPassword,
+} from "@/lib/server/crypto";
+import {
+  isPublicDemoMode,
+  PUBLIC_DEMO_PASSWORD_HASH_ITERATIONS,
+  type DemoModeEnvironment,
+} from "@/lib/server/demo-mode";
 import { HttpError } from "@/lib/server/http";
 
 const SESSION_LIFETIME_MILLISECONDS = 12 * 60 * 60 * 1_000;
 const RATE_WINDOW_MILLISECONDS = 15 * 60 * 1_000;
 const RATE_BLOCK_MILLISECONDS = 15 * 60 * 1_000;
 const RATE_MAX_FAILURES = 5;
-// Workerのglobal scopeでは乱数生成とPBKDF2を開始できないため、実アカウントと
-// 同じ計算量を持つ、ログインには使われない固定ダミーハッシュを検証に使う。
-const DUMMY_PASSWORD_HASH =
-  "pbkdf2-sha256$600000$tLDpEscdk9Y7hGtfPdmWYg$so57WBFNxFN_G1Y5Cz45zkBjKfmltLNUH91ggayV0CE";
+const DUMMY_PASSWORD_SALT = "-r04Siq0QbnbszE7lhEASA";
+const DUMMY_PASSWORD_DIGEST = "zT3HUQEF9oZHLDcIpIOp59Rr5bCW-2tzWwbzQPeOFoA";
+
+// Workerのglobal scopeでは乱数生成とPBKDF2を開始できないため固定値を使う。
+// iteration数だけは稼働環境の実アカウントに合わせ、メールアドレスの存在を
+// PBKDF2の応答時間から区別できないようにする。
+export function dummyPasswordHashForEnvironment(
+  environment: DemoModeEnvironment,
+): string {
+  const iterations = isPublicDemoMode(environment)
+    ? PUBLIC_DEMO_PASSWORD_HASH_ITERATIONS
+    : PASSWORD_HASH_ITERATIONS;
+  return `pbkdf2-sha256$${iterations}$${DUMMY_PASSWORD_SALT}$${DUMMY_PASSWORD_DIGEST}`;
+}
 
 export interface LoginResult {
   user: SessionUser;
@@ -36,6 +57,7 @@ function retryAfterSeconds(blockedUntil: string | null, now: Date): number {
 
 export async function loginWithPassword(input: {
   database: D1Database;
+  environment: DemoModeEnvironment;
   request: Request;
   email: string;
   password: string;
@@ -66,7 +88,10 @@ export async function loginWithPassword(input: {
   const user = await repository.findActiveUserByEmail(normalizedEmail);
   const passwordMatches = user
     ? await verifyPassword(input.password, user.passwordHash)
-    : await verifyPassword(input.password, DUMMY_PASSWORD_HASH);
+    : await verifyPassword(
+        input.password,
+        dummyPasswordHashForEnvironment(input.environment),
+      );
 
   if (!user || !passwordMatches) {
     const windowThreshold = new Date(now.getTime() - RATE_WINDOW_MILLISECONDS).toISOString();

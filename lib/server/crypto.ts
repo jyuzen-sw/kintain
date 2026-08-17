@@ -1,5 +1,5 @@
 const PASSWORD_SCHEME = "pbkdf2-sha256";
-const PASSWORD_ITERATIONS = 600_000;
+export const PASSWORD_HASH_ITERATIONS = 600_000;
 const PASSWORD_KEY_BYTES = 32;
 const PASSWORD_SALT_BYTES = 16;
 
@@ -55,10 +55,10 @@ async function derivePasswordKey(
 
 export async function hashPassword(password: string): Promise<string> {
   const salt = crypto.getRandomValues(new Uint8Array(PASSWORD_SALT_BYTES));
-  const derived = await derivePasswordKey(password, salt, PASSWORD_ITERATIONS);
+  const derived = await derivePasswordKey(password, salt, PASSWORD_HASH_ITERATIONS);
   return [
     PASSWORD_SCHEME,
-    PASSWORD_ITERATIONS.toString(),
+    PASSWORD_HASH_ITERATIONS.toString(),
     bytesToBase64Url(salt),
     bytesToBase64Url(derived),
   ].join("$");

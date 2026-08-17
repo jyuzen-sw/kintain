@@ -33,7 +33,7 @@
 - R2: 未使用
 - Sites manifest: `.openai/hosting.json`
 - Drizzle schema: `db/schema.ts`
-- migration: `drizzle/0001_initial.sql` → `drizzle/0002_request_idempotency.sql`
+- migration: `drizzle/0001_initial.sql` → `drizzle/0002_request_idempotency.sql` → `drizzle/0003_demo_seed.sql`（`0003`はPhase 2互換性commitで追加した空D1用の架空データmigration）
 - D1取得箇所: `lib/server/db.ts` に集約
 
 OpenAI公式showcaseも、SitesのVinext starter、Worker互換ESM、D1 `DB`、R2なし、Drizzle schema/migration、binding helperを示しています。[OpenAI Sites showcase: Sparkboard](https://learn.chatgpt.com/showcase/idea-intake)
@@ -58,6 +58,8 @@ OpenAI公式showcaseも、SitesのVinext starter、Worker互換ESM、D1 `DB`、R
 | visual QA | Playwright対象viewport＋手動確認 | 4 viewport×10画面＝40 PNG。代表6画面で横overflow・未完了loading・表示崩れなし |
 | production依存監査 | `npm audit --omit=dev` | Vinext固定依存に既知high 3件。既知制約へ記録済み |
 
+上表はPhase 1時点の履歴です。Phase 2では実D1 bootstrapのため `0003_demo_seed.sql` とローカル互換性修正を独立commitへ追加しました。さらに初回実deployでschemaは利用できる一方、正しい架空資格情報が401となりました。原因はSites本番workerdがPBKDF2を100,000反復までに制限し、Phase 1の600,000反復hashを `verifyPassword()` が例外から不一致へ変換していたことです。公開デモgate下の空D1初期化、同梱seedの厳密整合、既知の旧hashだけの一度限りの互換更新を分離し、全検査と実URL再検証を `SITES_DEPLOYMENT_RESULT.md` に記録します。
+
 Phase 2の再現順:
 
 ```bash
@@ -80,12 +82,13 @@ build後のローカルpreviewは `npm run start` です。
 
 binding名は `DB` から変更しません。実resource IDはリポジトリへ書きません。
 
-適用順は次の2本です。順序を入れ替えたり、`0002`を省略したりしません。
+適用順は次の3本です。順序を入れ替えたり、途中を省略したりしません。
 
 1. `drizzle/0001_initial.sql`
 2. `drizzle/0002_request_idempotency.sql`
+3. `drizzle/0003_demo_seed.sql`
 
-`0001`は9テーブルの基礎schema、`0002`は既存の`0001`適用済みD1を前進させるmigrationです。`attendance_requests.creation_request_id`を必須・一意として追加し、`audit_logs.mutation_id`をnullable一意として追加します。fresh D1にも必ず2本を順に適用します。
+`0001`は9テーブルの基礎schema、`0002`は既存の`0001`適用済みD1を前進させるmigrationです。`attendance_requests.creation_request_id`を必須・一意として追加し、`audit_logs.mutation_id`をnullable一意として追加します。`0003`はschemaを変えず、レビュー済みの架空データを空D1へ一度だけ投入します。fresh D1には必ず3本を順に適用し、既存データ入りD1へ`0003`を適用しません。
 
 migrationは以下の9テーブル、外部キー、CHECK、検索index、冪等性receipt・楽観lock向け制約を作成します。
 
@@ -112,13 +115,13 @@ npm run db:seed:render
 npm run db:reset:local
 ```
 
-- `db:migrate:local`: pending migrationのみをローカルD1へ適用します。
-- `db:seed:local`: 空DBへ6ユーザー、2現場、予定、勤務状態、GPS状態、申請3状態、監査例を投入します。重複投入用ではありません。
-- `db:seed:render`: D1へ接続せず、同じ架空seedをSQLとして標準出力へ生成します。Phase 2は生成物をレビューしてからSitesの承認済み実D1経路で適用します。
-- `db:reset:local`: migration適用後、ローカルの対象テーブルを外部キー順に空にしてseedを再投入します。
+- `db:migrate:local`: pending migrationのみをローカルD1へ適用します。`0003`がpendingの既存データ入りDBでは使わず、`db:reset:local`を使います。
+- `db:seed:local`: 全migrationを適用し、空ローカルDBへ6ユーザー、2現場、予定、勤務状態、GPS状態、申請3状態、監査例を動的に投入します。非空DBへの重複投入は明示的に拒否します。
+- `db:seed:render`: D1へ接続せず、同じ架空seedをSQLとして標準出力へ生成します。Phase 2では生成物をレビューし、その固定結果を `0003_demo_seed.sql` として同梱します。
+- `db:reset:local`: 既存ローカルデータを外部キー順に空にし、全migrationを適用した後、固定migration seedを動的な当日データへ置き換えます。
 - `LOCAL_DEMO_EMPLOYEE_PASSWORD` と `LOCAL_DEMO_ADMIN_PASSWORD` はローカルseedの上書き専用です。hosted環境へ登録しません。
 
-`seed` と `reset` subcommandは意図的にWranglerの `--local` だけを使用します。`render` subcommandはD1へ接続しません。Phase 2はrenderしたSQLを内容確認し、Sitesが提供する承認済み実D1操作経路から適用します。ローカルscriptを無断でremote向けに変更しないでください。
+`seed` と `reset` subcommandは意図的にWranglerの `--local` だけを使用します。`render` subcommandはD1へ接続しません。実D1への第一経路は、Sites標準packageに同梱した `0001` → `0002` → `0003` です。Sites connectorは物理D1名、migration履歴、SQL実行を公開しないため、初回login POSTの `lib/server/demo-bootstrap.ts` が実URLから状態を検証します。3つの公開デモgateが有効で、8つのアプリ表（`login_rate_limits`を除く）が完全に空なら原子的batchで初期化します。既に `0003` の固定seedがある場合は、全テーブル件数と既知IDが厳密一致するときだけ、100,000反復の公開デモ資格情報と実行日シナリオへ一度だけ整合します。旧600,000反復hashで整合済みの場合も、全6件のdirectory値・旧hash・初期化監査・sessionなしが完全一致するときだけ、勤怠をresetせずhashを更新します。いずれも通常INSERTの一意markerで遅い並行batch全体をrollbackし、完成状態を再照会できた場合だけno-opとして続行します。任意の既存userはno-op、userなしの部分状態は503で停止し、既存データを変更しません。ローカルscriptをremote向けに変更しないでください。
 
 ### 4.3 アプリ内reset
 
@@ -140,7 +143,7 @@ npm run db:reset:local
 
 架空account表示と管理者用HTTP resetは、3つのruntime gateがすべて有効な場合だけ許可されます。どれか1つでも満たさない通常モードでは無効です。
 
-この3つのgateはcredential入力補助、HTTP reset、公開デモのGPS破棄を制御するもので、login APIや公開済みseed credential自体を無効化しません。Siteのaccessを一般公開する場合は3つのgateをすべて有効にする明示承認が必要です。それ以外はowner/admin限定を維持します。公開credentialを使わない運用へ変える場合は、非公開credentialの安全な投入・rotationを別実装としてreviewします。
+この3つのgateはcredential入力補助、空D1の初回架空bootstrap、厳密に識別した同梱seedの一度限りの整合、HTTP reset、公開デモのGPS破棄を制御するもので、login APIや公開済みseed credential自体を無効化しません。空D1 bootstrapは8つのアプリ表が空のときだけ、同梱seed整合は全件数と既知IDが `0003` と完全一致するときだけ動き、それ以外の部分状態または非空DBには触れません。`login_rate_limits` は初回401からの復旧のため空判定対象外ですが、一意markerを保持します。Siteのaccessを一般公開する場合は3つのgateをすべて有効にする明示承認が必要です。それ以外はowner/admin限定を維持します。公開credentialを使わない運用へ変える場合は、非公開credentialの安全な投入・rotationを別実装としてreviewします。
 
 同じ3つのgateが有効な公開デモでは、訪問者端末のgeolocation APIを呼ばず、直接打刻APIへ送られた座標もサーバー側で破棄します。通常モードだけが任意GPS取得を行います。seedに含む座標は規則的に生成した合成値です。
 
@@ -212,7 +215,7 @@ npm run db:reset:local
 ## 9. 認証・認可
 
 - Sitesの共有範囲とアプリ内loginは別の境界です。一般公開にしても従業員・管理画面のAPIはD1 sessionとroleで保護します。
-- passwordは個別salt付きPBKDF2-SHA-256でhash化し、平文をD1へ保存しません。
+- passwordは個別salt付きPBKDF2-SHA-256でhash化し、平文をD1へ保存しません。公開デモaccountだけはSites本番workerdのhost上限に合わせて100,000反復とし、scheme、個別salt、保存形式は変更しません。
 - session tokenとCSRF tokenはopaque random値を発行し、D1にはhashだけを保存します。session有効期間は12時間です。
 - HTTPSでは `__Host-` prefix、`Secure`、`HttpOnly`、`SameSite` cookieを使用します。
 - login失敗はaccount・IP fingerprintの両方で制限し、存在しないuserにもdummy hash検証を行います。
@@ -259,7 +262,7 @@ Phase 2では実URLをinstallし、standalone起動、safe area、offline案内�
 4. **Vinext beta advisory**: `vinext@1.0.0-beta.5` がadvisory対象の `image-size@2.0.2` を固定しています。npmの提示する解消は互換性を崩すdowngradeで、Phase 1では適用していません。公開前に修正版の有無と入力面を再評価します。
 5. **実D1経路**: migration・seedはローカルで成功済みですが、SitesがprovisionしたD1への適用経路、実行結果、再実行性、backup/rollbackをPhase 2で確認します。
 6. **D1 batch**: HTTP resetのstatement数、申請判断・勤怠修正の条件付きbatch、実環境latency、failure時挙動を実D1で確認します。
-7. **PBKDF2 CPU**: 600,000反復をWorkers runtimeで実測し、login latencyとCPU制限を確認します。安全性を落とす変更はPhase 2で即断しません。
+7. **PBKDF2 host上限**: Sites本番workerdはPBKDF2を100,000反復までに制限し、600,000反復は `NotSupportedError` になります。公開済みの架空デモaccountだけ100,000反復へ互換調整します。600,000反復を必要とする実credential運用はPhase 1へ戻す課題です。[workerd limit enforcer](https://github.com/cloudflare/workerd/blob/main/src/workerd/io/limit-enforcer.h#L27)
 8. **session運用**: 自動的な期限切れsession清掃jobはありません。PoC後に運用する場合はcleanup方針が必要です。
 9. **PWA実URL**: Sitesのresponse header・scope下でinstallabilityとoffline fallbackを確認します。
 10. **実在データ禁止**: 勤怠、メール、位置情報、ログを含め、架空値以外は投入しません。
