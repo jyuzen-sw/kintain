@@ -1,34 +1,26 @@
 # 勤怠管理 PoC
 
-スマートフォン中心の従業員向け勤怠操作と、PC中心の管理者向け確認・承認を備えた、ChatGPT Sites-readyな勤怠管理PoCです。メールアドレスとパスワードによるアプリ内認証、Cloudflare D1への永続化、PWA、監査ログを実装しています。
-
-> [!IMPORTANT]
-> このリポジトリは **Phase 1（Sites-ready、未デプロイ）** の成果物です。ChatGPT Sitesの作成、実D1の作成・接続、実環境値の設定、バージョン保存、デプロイ、公開URL発行は実施していません。これらは [SITES_DEPLOYMENT_RUNBOOK.md](./SITES_DEPLOYMENT_RUNBOOK.md) に従ってPhase 2で行います。
+スマートフォン中心の従業員向け勤怠操作と、PC中心の管理者向け確認・承認を備えた勤怠管理PoCです。メールアドレスとパスワードによるアプリ内認証、Cloudflare D1への永続化、PWA、監査ログを実装し、ChatGPT Sitesでホストできる構成にしています。
 
 ## 主な機能
 
-- 従業員: 出勤・退勤、GPS取得状態の記録、当日状態、月次実績、本人修正、休暇・欠勤申請、申請取消
-- 管理者: 当日・現場別・個人別の実績確認、日次一覧からの勤務予定登録・更新・削除、全期間の実績修正、申請承認・却下、監査ログ、デモデータreset
-- 認証・認可: メールアドレス＋パスワード、D1 session、ロール判定、CSRF防御、同一origin検査、ログイン試行制限
-- データ: 予定、勤怠実績、打刻イベント、申請、監査、sessionをD1へ保存
+- 従業員: 出勤・退勤、当日状態、月次実績、本人修正、休暇・欠勤申請、申請取消
+- 管理者: 当日・現場別・個人別の実績確認、勤務予定管理、実績修正、申請承認・却下、監査ログ、デモデータreset
+- 認証・認可: D1 session、ロール判定、CSRF防御、同一origin検査、ログイン試行制限
+- データ: 勤務予定、勤怠実績、打刻イベント、申請、監査、sessionをD1へ保存
 - PWA: manifest、Service Worker、オフライン案内、更新通知、safe area対応
-
-認証方式の判断は [ADR 0001](./docs/adr/0001-sites-authentication.md)、画面とデザインは [DESIGN.md](./DESIGN.md)、Phase 2への完全な引き継ぎ情報は [SITES_HANDOFF.md](./SITES_HANDOFF.md) を参照してください。
 
 ## 技術構成
 
-- Node.js 22以上
-- TypeScript 5.9（strict）
-- React 19 / Vinext 1.0.0-beta.5 / Vite 8
-- Cloudflare Worker互換ESM / Cloudflare D1 binding `DB`
+- Node.js 22以上 / npm
+- TypeScript / React / Vinext / Vite
+- Cloudflare Worker互換ESM / Cloudflare D1
 - Drizzle ORM / Drizzle Kit
 - Vitest / Cloudflare Workers Vitest pool / Playwright
 
-OpenAI公式のSites showcaseは、Vinext starter、Cloudflare Worker互換ESM、`.openai/hosting.json`、D1の論理binding `DB`、`db/schema.ts` とmigrationを推奨しています。本リポジトリはこの形に合わせています。[OpenAI Sites showcase: Sparkboard](https://learn.chatgpt.com/showcase/idea-intake)
+依存関係の正確なバージョンと実行スクリプトは[`package.json`](./package.json)を正本とします。
 
 ## ローカル起動
-
-前提はNode.js 22以上とnpmです。
 
 ```bash
 npm ci
@@ -36,14 +28,14 @@ npm run db:reset:local
 npm run dev
 ```
 
-表示されたローカルURLへアクセスします。`db:reset:local` はmigration適用後、ローカルD1のデータを削除して架空データを再投入します。実D1には接続しません。
+表示されたローカルURLへアクセスします。`db:reset:local`はmigrationを適用し、ローカルD1を架空デモデータへ戻します。実D1には接続しません。
 
 ### 架空デモアカウント
 
-以下は `.example.test` ドメインだけを使う、意図的に公開された架空のPoC用認証情報です。実在人物・実サービスには使用しないでください。
+`.example.test`ドメインだけを使う、意図的に公開されたPoC用認証情報です。実在人物や実サービスには使用しないでください。
 
 | ロール | メールアドレス | パスワード |
-|---|---|---|
+| --- | --- | --- |
 | 従業員 | `maru.employee@example.test` | `DemoPass!2026` |
 | 従業員 | `batsu.employee@example.test` | `DemoPass!2026` |
 | 従業員 | `sankaku.employee@example.test` | `DemoPass!2026` |
@@ -54,54 +46,49 @@ npm run dev
 ## よく使うコマンド
 
 | コマンド | 用途 |
-|---|---|
-| `npm run dev` | Vinext開発サーバー |
-| `npm run build` | Cloudflare Worker互換の本番build |
-| `npm run start` | build済みWorkerをWranglerでローカルpreview |
-| `npm run lint` | ESLint |
-| `npm run typecheck` | strict TypeScript検査 |
-| `npm run test:unit` | 単体テスト |
-| `npm run test:integration` | Workers runtime＋ローカルD1の結合テスト |
-| `npm run test:e2e` | Playwright E2E |
-| `npm run test:coverage` | coverage取得 |
-| `npm run db:migrate:local` | `0001_initial.sql`、`0002_request_idempotency.sql`、`0003_demo_seed.sql`、`0004_work_schedule_management.sql` を順にローカルD1へ適用 |
-| `npm run db:seed:local` | 空のローカルD1へ架空seedを投入 |
-| `npm run db:seed:render` | D1へ接続せず、架空seed SQLを検証・再生成するため標準出力へ生成 |
+| --- | --- |
+| `npm run dev` | 開発サーバーを起動する |
+| `npm run build` | Cloudflare Worker互換の本番buildを作る |
+| `npm run start` | build済みWorkerをローカルpreviewする |
+| `npm run lint` | ESLintを実行する |
+| `npm run typecheck` | strict TypeScript検査を実行する |
+| `npm run test:unit` | 単体テストを実行する |
+| `npm run test:integration` | Workers runtimeとローカルD1の結合テストを実行する |
+| `npm run test:e2e` | Playwright E2Eを実行する |
+| `npm run test:coverage` | test coverageを取得する |
+| `npm run db:migrate:local` | 未適用のmigrationをローカルD1へ適用する |
+| `npm run db:seed:local` | 空のローカルD1へ架空データを投入する |
 | `npm run db:reset:local` | ローカルD1を初期架空データへ戻す |
 
-`db:seed:local` は既存seedへの重複投入を意図していません。通常は再実行可能な `db:reset:local` を使います。特に、`0003_demo_seed.sql` が未適用で既存データのあるローカルD1には `db:migrate:local` を使わず、`db:reset:local` で安全に初期化してください。
+`db:seed:local`は既存seedへの重複投入を想定していません。通常の再初期化には`db:reset:local`を使用してください。
 
-## データと環境設定
+## 設定とデータ
 
-- D1 bindingはコード、Wrangler、Sites manifestのすべてで `DB` に固定しています。
-- schemaは [`db/schema.ts`](./db/schema.ts)、migrationは [`drizzle/0001_initial.sql`](./drizzle/0001_initial.sql) → [`drizzle/0002_request_idempotency.sql`](./drizzle/0002_request_idempotency.sql) → [`drizzle/0003_demo_seed.sql`](./drizzle/0003_demo_seed.sql) → [`drizzle/0004_work_schedule_management.sql`](./drizzle/0004_work_schedule_management.sql) の順です。`0003` は空の実D1へ一度だけ適用する架空デモデータ移行、`0004` は勤務予定へ楽観ロック用versionを追加する前進migrationです。
-- Sites実環境で架空データ行が存在しない場合は、3つの公開デモgateがすべて有効なときに限り、初回login POSTが8つのアプリ表（rate limit表を除く）の完全な空を確認して既定の架空user・site・当日シナリオを1つのD1 batchで初期化します。また、Sitesが同梱migrationの固定seedを適用済みの場合は、全件数と既知IDが `0003_demo_seed.sql` と完全一致するときだけ、公開資格情報と実行日シナリオへ一度だけ同じbatchで整合します。どちらも一意markerで並行要求の片方を全体rollbackし、先行処理の完成を確認してno-opにします。任意の既存データや部分状態は変更しません。
-- 公開デモaccountは個別salt付きPBKDF2-SHA-256を維持し、Sites本番workerdのhost上限に合わせて100,000反復で固定します。既に `0003` の600,000反復hashを整合済みのD1は、6件すべての既知ID・directory値・旧hash・初期化監査が完全一致するときだけ、勤怠データを触らず一度だけ100,000反復hashへ更新します。
-- UTC日時はISO 8601のTEXT、勤務日はAsia/Tokyo基準の `YYYY-MM-DD` で保存します。
-- ローカルD1状態、ローカル環境ファイル、実環境値はGit管理しません。
-- hosted environment valuesはPhase 2でSitesの設定画面から登録し、値をprompt、添付、manifest、文書、ログへ転記しません。[OpenAI Sites documentation](https://learn.chatgpt.com/docs/sites)
+- D1 bindingはコード、Wrangler、Sites manifestのすべてで`DB`に固定しています。
+- schemaは[`db/schema.ts`](./db/schema.ts)、前進migrationは[`drizzle/`](./drizzle/)を正本とします。
+- 公開デモは`DEMO_MODE`、`ALLOW_PUBLIC_DEMO`、`SHOW_DEMO_CREDENTIALS`がすべて`true`のときだけ有効です。ローカル用の設定例は[`.dev.vars.example`](./.dev.vars.example)にあります。
+- 3つの設定はデモ表示・初期化・resetを許可するgateであり、公開済みcredentialの失効機構ではありません。
+- 公開デモでは訪問者端末の位置情報を取得せず、APIへ直接送られた座標も保存しません。通常モードでは任意GPS機能を利用できます。
+- ローカルD1状態、`.dev.vars`、hosted environment valuesはGit管理しません。
 
-環境変数名と用途は [SITES_HANDOFF.md](./SITES_HANDOFF.md#環境変数とsecret) に集約しています。
+## 設計上の要点
 
-## PWAの動作
+- `punch_events`は打刻事実として変更せず、現在値を`attendance_records`、変更履歴を`audit_logs`へ保存します。
+- 打刻、勤怠修正、申請、勤務予定の更新系操作はclient request IDとDB上のreceiptで冪等化します。同じIDを異なる操作へ流用した場合は競合として拒否します。
+- 勤務予定はversionで競合を検出し、打刻・入力済み実績・処理中または承認済み申請がある日の不整合な変更を拒否します。
+- 認証にはD1上のopaque sessionを使用し、Sitesの共有範囲とアプリ内の従業員・管理者権限を分離します。
+- Service Workerは認証済みHTML、API、更新操作をcacheまたはoffline queueへ入れません。
 
-`public/manifest.webmanifest` の開始URLは `/app` です。iconは192×192 PNG、512×512 PNG、maskable 512×512 PNG、Apple touch icon、SVGを用意しています。Service Workerは個人データを含まないアプリシェル、manifest、icon、offlineページと取得済みbuild静的assetをcacheします。認証済みHTML、RSC、APIはcacheせず、画面遷移がnetwork errorになった場合は「保存されていない」ことを明示する汎用シェルを返します。APIと更新系操作はoffline queueへ入れません。接続復旧後に利用者が明示的に再試行します。
+## ドキュメント
 
-## 実装判断
+- [デザイン方針](./docs/design.md)
+- [ADR 0001: Sites公開デモでもアプリ内loginとD1 sessionを使う](./docs/adr/0001-sites-authentication.md)
+- [ADR 0002: 公開デモだけPBKDF2コストをSites実行上限へ合わせる](./docs/adr/0002-sites-public-demo-password-cost.md)
+- [ChatGPT Sites運用ガイド](./docs/operations/sites.md)
 
-- `punch_events` は打刻事実として変更せず、現在値は `attendance_records`、変更はGPSを含まない可変勤怠項目だけを `audit_logs` へ保存します。
-- 打刻、勤怠修正、申請作成・取消・審査はUUIDとDB上のreceiptで冪等化します。同じpayloadの再送は同じ結果、同じUUIDの別操作への流用は409です。画面上で失敗後に入力内容を変えた場合は新しいUUIDへ切り替えます。
-- 勤務予定の登録・更新・削除もUUIDと監査ログ上のreceipt、versionで冪等化・競合検出します。打刻または入力済み実績、申請中・承認済み申請がある日は変更できませんが、打刻準備で作られただけの空の通常勤務レコードは予定変更を妨げません。
-- 退勤時の自動休憩は予定値、なければ60分です。ただし勤務経過がそれより短い場合は「休憩は勤務経過以下」という確定制約を守るため、自動値だけを経過分数まで縮めます。利用者が明示入力した過大値は保存を拒否します。
-- 公開デモの3つのgateが有効な場合、訪問者の実GPSを端末で取得せず、直接APIへ送られた座標もサーバーで破棄します。通常モードでは任意GPS機能を利用できます。seedの座標は規則的に生成した合成値です。
+## PoCとしての制約
 
-## テストと引き継ぎ
-
-Phase 1の実行結果、全画面・API route、smoke項目、既知制約は [SITES_HANDOFF.md](./SITES_HANDOFF.md) にあります。Phase 2担当者は作業前に固定コミットとclean worktreeを確認し、全検査を再実行してください。
-
-## 重要な制約
-
-- ChatGPT Sitesはpublic betaです。すべてのデプロイURLはproduction扱いなので、Phase 2ではまずversionを保存してレビューし、承認後にのみdeployします。
-- Sitesはローンチ時点でdata residency / inference residencyを提供せず、Site code、D1/R2、生成物、ログも対象です。架空データ以外を投入しません。[OpenAI Sites documentation](https://learn.chatgpt.com/docs/sites)
-- Vinext betaが既知advisory対象の `image-size` を固定しています。安全な互換更新が公開されるまでPoC限定です。
-- Sites本番workerdはPBKDF2を100,000反復までに制限します。公開デモaccountはこの上限へ適合済みですが、600,000反復を必要とする実credential運用はPhase 1へ戻して別方式を設計する必要があります。実D1のbatch・latency・migration/seed経路はPhase 2の実環境で確認します。
+- 架空データだけを扱う公開デモ用途を前提とし、実在従業員の個人情報や実credentialを投入しません。
+- 通常環境の新規password hashはPBKDF2-SHA-256の600,000反復です。Sites向け公開デモの既知accountだけは実行上限に合わせて100,000反復とします。判断と境界はADR 0002を参照してください。
+- password reset、email verification、MFA、account provisioning、期限切れsessionの定期cleanupは対象外です。
+- ChatGPT Sitesの提供範囲や制限は変わり得るため、公開作業前に[公式ドキュメント](https://learn.chatgpt.com/docs/sites)を確認してください。
